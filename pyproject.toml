@@ -6,8 +6,9 @@ authors = ["Benjamin Kamphaus <ben@vendekagonlabs.com>"]
 readme = "README.md"
 
 [tool.poetry.dependencies]
-python = "^3.9"
-
+python = ">=3.9"
+requests = ">=2.26.0"
+presto-python-client = ">=0.8.4"
 
 [build-system]
 requires = ["poetry-core"]
