@@ -1,21 +1,35 @@
 [tool.poetry]
 name = "patternq"
 version = "0.1.0"
-description = ""
+description = "A library for querying the Pattern.org data commons and its UnifyBio components."
 authors = ["Benjamin Kamphaus <ben@vendekagonlabs.com>"]
 readme = "README.md"
 
+# tool.poetry.dependencies contains just the package dependencies,
+# broadly versioned in a way that reflects tested coverage of
+# multiple python and dependency versions.
 [tool.poetry.dependencies]
 python = ">=3.9"
 requests = ">=2.26.0"
 presto-python-client = ">=0.8.4"
 pandas = ">=2.0.1"
 
+# the main test dependency group only specifies the relevant pytest
+# package.
 [tool.poetry.group.test.dependencies]
 pytest = "^8.3.3"
 
+# dev dependencies should always be a superset of the standard
+# test dependencies, adding in interactive dev supporting packages.
 [tool.poetry.group.dev.dependencies]
 ipython = "^8.18.1"
+pytest = "^8.3.3"
+
+# tutorial dev dependencies are narrowly pegged and opinionated, supporting
+# docs / notebook tutorials for using the patternq package.
+[tool.poetry.group.tutorial.dependencies]
+python = "^3.12"
+jupyter = "^1.1.1"
 
 [build-system]
 requires = ["poetry-core"]
