@@ -13,6 +13,7 @@ python = ">=3.9"
 requests = ">=2.26.0"
 presto-python-client = ">=0.8.4"
 pandas = ">=2.0.1"
+anndata = ">=0.9.2"
 
 # the main test dependency group only specifies the relevant pytest
 # package.
