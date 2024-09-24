@@ -35,3 +35,15 @@ def genes(db_name=None, **kwargs):
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df
 
+gdc_anatomic_sites_query = {
+    ":find": ["?gdc-site"],
+    ":where":
+    [["_", ":gdc-anatomic-site/name", "?gdc-site"]]
+}
+
+def gdc_anatomic_sites(db_name=None, **kwargs):
+    qres = pqq.query(gdc_anatomic_sites_query,
+                     db_name=db_name,
+                     **kwargs)
+    gdc_sites = [relation[0] for relation in qres["query_result"]]
+    return gdc_sites

@@ -2,7 +2,6 @@ import pandas as pd
 import patternq.dataset as pqd
 import patternq.reference as pqr
 
-
 sub_id = "TCGA-A7-A0DB"
 assays = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
 assays
@@ -23,3 +22,6 @@ genes
 
 measurements = pqd.measurements("gx", "rsem_normalized_count")
 measurements
+
+sites = pqr.gdc_anatomic_sites(db_name='tcga-brca')
+sites
