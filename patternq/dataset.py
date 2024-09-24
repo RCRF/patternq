@@ -1,6 +1,7 @@
 import pandas as pd
 import patternq.query as pqq
 import patternq.helpers as pqh
+import patternq.trino as trino
 
 samplesq = {
     ":find": [["pull", "?s", ["*",
@@ -68,3 +69,27 @@ def assays_for_patient(id, **kwargs):
                 "assay-name", "measurement-set-name"]
     return pd.DataFrame(qres["query_result"], columns=col_vars)
 
+
+# TBD: query builder pattern lab that's presto SQL compatible to handle
+#      avoiding injection, programmatic patterns, etc.
+def measurements_sql(measurement_set, measurement_attr):
+    return f"""select sample.id, gene.hgnc_symbol, m.{measurement_attr}
+               from measurement m
+               join measurement_set_x_measurements msxm
+                 on msxm.db__id = m.db__id
+               join measurement_set ms
+                 on ms.db__id = msxm.db__id
+               join sample
+                 on m.sample = sample.db__id
+               join gene_product gp
+                on m.gene_product = gp.db__id
+               join gene
+                 on gp.gene = gene.db__id
+               where ms.name = '{measurement_set}'
+"""
+
+
+def measurements(measurement_set, measurement_attr):
+    sql_query = measurements_sql(measurement_set, measurement_attr)
+    rows = trino.query(sql_query)
+    return pd.DataFrame(rows, columns=["sample-id", "hgnc", "rsem"])

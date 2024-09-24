@@ -12,3 +12,6 @@ samples
 datasets = pqd.datasets(db_name="tcga-brca")
 datasets
 datasets.columns
+
+measurements = pqd.measurements("gx", "rsem_normalized_count")
+measurements
