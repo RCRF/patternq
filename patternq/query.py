@@ -5,16 +5,16 @@ import gzip as gz
 
 
 def commons_endpoint():
-    default = "http://data-commons-query-dev.us-east-1.elasticbeanstalk.com/query"
+    default = "http://data-commons-query-dev.us-east-1.elasticbeanstalk.com"
     endpoint = os.getenv("PATTERNQ_ENDPOINT")
     if not (endpoint and endpoint.startswith("http")):
         endpoint = default
     return endpoint
 
 def make_headers():
-    bearer_token = os.getenv('BEARER_TOKEN')
+    bearer_token = os.getenv('PATTERNQ_BEARER_TOKEN')
     if not bearer_token:
-        raise Exception("Must set BEARER_TOKEN in environment to use query!")
+        raise Exception("Must set PATTERNQ_BEARER_TOKEN in environment to use query!")
     return {"Authorization": f"Bearer {bearer_token}",
             "Accept": "text/plain"}
 
@@ -48,3 +48,4 @@ def query(q_dict, args=None, session=None, timeout=30, db_name='tcga-brca'):
             print(json.loads(resp.content))
         finally:
             resp.raise_for_status()
+
