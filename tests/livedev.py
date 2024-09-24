@@ -1,25 +1,14 @@
-from patternq.query import query
 import pandas as pd
+import patternq.dataset as pqd
 
-
-def assays_for_patient(id):
-  qres = query(
-      {":find" : ["?subject-id", "?sample-id", "?a-tech", "?a-name"],
-        ":in" : ["$", "?subject-id"],
-        ":where" : [
-        ["?p", ":subject/id", "?subject-id"],
-        ["?s", ":sample/subject", "?p"],
-        ["?s", ":sample/id", "?sample-id"],
-        ["?m", ":measurement/sample", "?s"],
-        ["?ms", ":measurement-set/measurements", "?m"],
-        ["?a", ":assay/measurement-sets", "?ms"],
-        ["?a", ":assay/technology", "?at"],
-        ["?a", ":assay/name", "?a-name"],
-        ["?at", ":db/ident", "?a-tech"]]},
-      args=["TCGA-A7-A0DB"]
-  )
-  col_vars = ["subject-id", "sample-id", "assay-tech", "assay-name"]
-  return pd.DataFrame(qres["query_result"], columns=col_vars)
 
 sub_id = "TCGA-A7-A0DB"
-assays_for_patient(sub_id)
+assays = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
+assays
+
+samples = pqd.samples("tcga-brca", db_name='tcga-brca')
+samples
+
+datasets = pqd.datasets(db_name="tcga-brca")
+datasets
+datasets.columns
