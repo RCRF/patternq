@@ -21,12 +21,12 @@ def commons_endpoint():
         endpoint = default
     return endpoint
 
-def make_headers():
+def make_headers(accept="text/plain"):
     bearer_token = os.getenv('PATTERNQ_BEARER_TOKEN')
     if not bearer_token:
         raise Exception("Must set PATTERNQ_BEARER_TOKEN in environment to use query!")
     return {"Authorization": f"Bearer {bearer_token}",
-            "Accept": "text/plain"}
+            "Accept": accept}
 
 
 def query(q_dict, args=None, session=None, timeout=30, db_name=None):
@@ -59,6 +59,34 @@ def query(q_dict, args=None, session=None, timeout=30, db_name=None):
         return qres
     else:
         print("Query encountered an error:")
+        try:
+            print(resp.content)
+            print(json.loads(resp.content))
+        finally:
+            resp.raise_for_status()
+
+def datoms(index, components, offset=0, limit=1000,
+           session=None, timeout=30, db_name=None):
+    if not session:
+        session = requests
+    req_body = {"index": index,
+                "components": components,
+                "offset": offset,
+                "limit": limit}
+    if db_name is None:
+        db_name = db
+    headers = make_headers(accept="application/json")
+    endpoint = f"{commons_endpoint()}/datoms/{db_name}"
+    resp = requests.post(
+        endpoint,
+        json.dumps(req_body),
+        headers=headers,
+        timeout=(timeout + 2)
+    )
+    if resp.status_code == 200:
+        return json.loads(resp.content)
+    else:
+        print("Datoms call encountered an error:")
         try:
             print(resp.content)
             print(json.loads(resp.content))
