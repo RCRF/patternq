@@ -5,19 +5,18 @@ import patternq.reference as pqr
 import patternq.helpers as pqh
 
 sub_id = "TCGA-A7-A0DB"
-assays = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
-assays
+assays_for_sub = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
+assays_for_sub
 
 samples = pqd.samples("tcga-brca", db_name='tcga-brca')
 samples
+samples_sub = samples[samples["sample-subject-subject-id"] == sub_id]
 
 datasets = pqd.datasets(db_name="tcga-brca")
 datasets
-datasets.columns
 
 gsyms = pqr.gene_symbols(db_name='tcga-brca')
 gsyms
-len(gsyms)
 
 genes = pqr.genes(db_name='tcga-brca', timeout=90)
 genes
@@ -35,11 +34,15 @@ assays[["assay-name", "measurement-set-name"]]
 clin_sum = pqd.clinical_summary("tcga-brca", db_name='tcga-brca')
 clin_sum
 
-result
-result["measurement-set-measurements"]
+sample_for_meas = assays_for_sub[assays_for_sub['measurement-set-name'] == 'baseline mutations']
+sample_for_meas = sample_for_meas.iloc[0]['sample-id']
+sample_meas = pqd.sample_measurements('tcga-brca', 'baseline mutations', sample_for_meas, db_name='tcga-brca')
+sample_meas
+
+meas = pqd.all_measurements("tcga-brca", "baseline mutations", db_name="tcga-brca")
 
 
-patients = pqd.all_subjects(dataset="tcga-brca", db_name="tcga-brca")
+patients = pqd.all_subjects("tcga-brca", db_name="tcga-brca")
 patients
 
 
