@@ -21,8 +21,9 @@ gsyms
 genes = pqr.genes(db_name='tcga-brca', timeout=90)
 genes
 
-measurements = pqd.measurements("gx", "rsem_normalized_count")
-measurements
+# -- this takes a little while, so uncomment with care --
+# measurements = pqd.measurements("gx", "rsem_normalized_count")
+# measurements
 
 sites = pqr.gdc_anatomic_sites(db_name='tcga-brca')
 sites
@@ -39,10 +40,19 @@ sample_for_meas = sample_for_meas.iloc[0]['sample-id']
 sample_meas = pqd.sample_measurements('tcga-brca', 'baseline mutations', sample_for_meas, db_name='tcga-brca')
 sample_meas
 
-meas = pqd.all_measurements("tcga-brca", "baseline mutations", db_name="tcga-brca")
+var = pqr.variants(sample_meas['measurement-variant-variant-id'].tolist(), db_name='tcga-brca')
+var
+# -- for tcga, this is massive, but not always --
+# vars = pqr.variants("tcga-brca", timeout=120)
+# vars
+
+
+
+meas = pqd.all_measurements("tcga-brca", "baseline mutations", db_name="tcga-brca",
+                            timeout=120)
+meas
 
 
 patients = pqd.all_subjects("tcga-brca", db_name="tcga-brca")
 patients
-
 
