@@ -1,6 +1,7 @@
 import pandas as pd
-import patternq.query as pqq
+
 import patternq.helpers as pqh
+import patternq.query as pqq
 import patternq.trino as trino
 
 samplesq = {
@@ -49,9 +50,9 @@ def datasets(db_name=None, **kwargs):
 
 def assays_for_patient(id, **kwargs):
     qres = pqq.query(
-        {":find" : ["?subject-id", "?sample-id", "?a-tech", "?a-name", "?ms-name"],
-         ":in" : ["$", "?subject-id"],
-         ":where" : [
+        {":find": ["?subject-id", "?sample-id", "?a-tech", "?a-name", "?ms-name"],
+         ":in": ["$", "?subject-id"],
+         ":where": [
              ["?p", ":subject/id", "?subject-id"],
              ["?s", ":sample/subject", "?p"],
              ["?s", ":sample/id", "?sample-id"],
@@ -68,6 +69,34 @@ def assays_for_patient(id, **kwargs):
     col_vars = ["subject-id", "sample-id", "assay-tech",
                 "assay-name", "measurement-set-name"]
     return pd.DataFrame(qres["query_result"], columns=col_vars)
+
+
+all_subjects_q = {
+    ":find": [["pull",
+               "?s",
+               ["*",
+                {":subject/sex": [":db/ident"]},
+                {":subject/race": [":db/ident"]},
+                {":subject/ethnicity": [":db/ident"]},
+                {":subject/meddra-disease": [":meddra-disease/preferred-name"]},
+                {":subject/disease-stage": [":db/ident"]},
+                {":subject/smoker": [":db/ident"]},
+                {":subject/cause-of-death": [":db/ident"]},
+                {":subject/therapies": [":therapy/order",
+                                        {":therapy/treatment-regimen":
+                                         [":treatment-regimen/name"]}]}]]],
+    ":where": [
+        ["?d", ":dataset/name", "?dataset-name"],
+        ["?d", ":dataset/subjects", "?s"]
+    ]
+}
+
+def all_subjects(dataset="tcga-brca", db_name=None, **kwargs):
+    qres = pqq.query(all_subjects_q, args=[dataset],
+                     db_name=db_name, **kwargs)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
 
 
 # TBD: query builder pattern lab that's presto SQL compatible to handle
@@ -93,3 +122,43 @@ def measurements(measurement_set, measurement_attr):
     sql_query = measurements_sql(measurement_set, measurement_attr)
     rows = trino.query(sql_query)
     return pd.DataFrame(rows, columns=["sample-id", "hgnc", "rsem"])
+
+
+def measurement_generator(meas_attr=":measurement/rsem-normalized-count", db_name='tcga-brca',
+                          chunk_size=5000):
+    """Another approach to iterating through all measurements: using
+    a generator with the datoms API. Ideally we would read ahead, re-use session,
+    and load and iterate concurrently, but this is Python so that's not
+    as trivial as e.g. a buffered channel and concurrency in Clojure."""
+    offset = 0
+    api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
+                          offset=offset, limit=chunk_size)
+    chunk = api_resp["datoms_chunk"]
+    # -- todo: moving a pull pattern option to the client side for
+    #.   the datoms API would save us a ton of time, so we don't have
+    #.   to rehydrate (1) in Python, and (2) via client/server call
+    while len(chunk) >= 1:
+        meas_eids = [elem[":e"] for elem in chunk]
+        meas_res = pqq.query({
+            ":find": ["?m", "?hgnc", "?samp-id"],
+            ":in": ["$", ["?m", "..."]],
+            ":where":
+                [["?m", ":measurement/gene-product", "?gp"],
+                 ["?gp", ":gene-product/gene", "?g"],
+                 ["?g", ":gene/hgnc-symbol", "?hgnc"],
+                 ["?m", ":measurement/sample", "?s"],
+                 ["?s", ":sample/id", "?samp-id"]]
+        },
+            args=[meas_eids],
+            db_name='tcga-brca'
+        )
+        lookup = dict([(meas[0], (meas[1], meas[2])) for meas in meas_res["query_result"]])
+        for datom in chunk:
+            eid = datom[":e"]
+            match = lookup[eid]
+            yield eid, match[0], match[1], datom[":v"]
+        offset += chunk_size
+        api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
+                              offset=offset, limit=chunk_size)
+        chunk = api_resp["datoms_chunk"]
+    raise StopIteration

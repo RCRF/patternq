@@ -69,3 +69,9 @@ next(meas_gen)
 
 for i in range(1000000):
     print(next(meas_gen))
+
+
+patients = pqd.all_subjects(dataset="tcga-brca", db_name="tcga-brca")
+patients.columns
+
+patients['subject-race']
