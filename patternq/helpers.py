@@ -22,7 +22,7 @@ PatternQProvenance = namedtuple(
 
 # as in clojure walk/postwalk.
 def walk(inner, outer, coll):
-    if isinstance(coll, list):
+    if isinstance(coll, list) or isinstance(coll, tuple):
         return outer([inner(e) for e in coll])
     elif isinstance(coll, dict):
         return outer(dict([inner(e) for e in coll.items()]))
@@ -37,10 +37,8 @@ def postwalk(fn, coll):
 def maybe_flatten_enum(elem):
     if isinstance(elem, dict):
         if ":db/ident" in elem:
-            if len(elem.keys()) == 1:
-                return elem[":db/ident"]
+            return elem[":db/ident"]
     return elem
-
 
 def flatten_enum_idents(qres):
     """Given query results as parsed by json, flattens all enums to contain
@@ -48,6 +46,21 @@ def flatten_enum_idents(qres):
     {:db/ident :some/ident}"""
     return postwalk(maybe_flatten_enum, qres)
 
+def expand_many_nested(qres_df, attribute):
+    """Given query results as previously JSON normalized in a data frame, we extract
+    the nested entities, normalize them separately, then join them back in appropriately."""
+    qres_df = qres_df.explode(column=attribute)
+    qres_df["nested-db-id###"] = qres_df[attribute].apply(lambda l: l[":db/id"])
+    nested_entities = pd.json_normalize(qres_df[attribute].tolist())
+    nested_entities = clean_column_names(nested_entities)
+    result = qres_df.merge(
+        nested_entities,
+        left_on="nested-db-id###",
+        right_on="db-id",
+        how="left"
+    )
+    result = result.drop(columns=['db-id_x', 'db-id_y', 'nested-db-id###'])
+    return result
 
 def clean_column_names(df):
     """Clean the column names as returned by common patternq queries, with or
@@ -72,6 +85,7 @@ def pull2fields(qres):
     pull expression into fields using common assumptions.
     """
     query_result = qres["query_result"]
+    query_result = flatten_enum_idents(query_result)
     flat_df = pd.DataFrame(query_result, columns=["pull"])
     return pd.json_normalize(flat_df['pull'])
 
