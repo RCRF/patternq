@@ -127,7 +127,7 @@ all_subjects_q = {
     ]
 }
 
-def all_subjects(dataset="tcga-brca", db_name=None, **kwargs):
+def all_subjects(dataset, db_name=None, **kwargs):
     qres = pqq.query(all_subjects_q, args=[dataset],
                      db_name=db_name, **kwargs)
     qres = pqh.flatten_enum_idents(qres)
@@ -136,6 +136,51 @@ def all_subjects(dataset="tcga-brca", db_name=None, **kwargs):
     qres_df = qres_df.explode(column="subject-race")
     return qres_df
 
+
+all_measurements_q = {
+    ":find": [["pull", "?m",
+               # todo: many more attributes
+               [{":measurement/variant": [":variant/id"]},
+                {":measurement/sample": [":sample/id"]},
+                {":measurement/epitope": [":epitope/id",
+                                          {":epitope/protein":
+                                           [":protein/preferred-name"]}]},
+                {":measurement/gene-product": [":gene-product/id",
+                                               {":gene-product/gene":
+                                                [":gene/hgnc-symbol"]}]}]]],
+    ":in": ["$", "?dataset-name", "?ms-name"],
+    ":where":
+    [["?d", ":dataset/name", "?dataset-name"],
+     ["?d", ":dataset/assays", "?a"],
+     ["?a", ":assay/measurement-sets", "?ms"],
+     ["?ms", ":measurement-set/name", "?ms-name"],
+     ["?ms", ":measurement-set/measurements", "?m"]]
+}
+
+def all_measurements(dataset, measurement_set, db_name=None, **kwargs):
+    qres = pqq.query(all_measurements_q,
+                     args=[dataset, measurement_set],
+                     db_name=db_name, **kwargs)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
+
+
+sample_q = all_measurements_q.copy()
+sample_q[":in"].append("?sample-id")
+sample_q[":where"] = sample_q[":where"][:4] + \
+    [["?d", ":dataset/samples", "?s"],
+     ["?s", ":sample/id", "?sample-id"]] + \
+    sample_q[":where"][4:] + \
+    [["?m", ":measurement/sample", "?s"]]
+sample_measurements_q = sample_q
+
+def sample_measurements(dataset, measurement_set, sample_id, db_name=None, **kwargs):
+    qres = pqq.query(sample_measurements_q, args=[dataset, measurement_set, sample_id],
+                     db_name=db_name, **kwargs)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
 
 # TBD: query builder pattern lab that's presto SQL compatible to handle
 #      avoiding injection, programmatic patterns, etc.
