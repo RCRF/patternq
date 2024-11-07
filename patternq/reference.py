@@ -52,7 +52,7 @@ all_variants_q = {
     ":find": [["pull", "?v", ["*",
                               {":variant/classification": [":db/ident"]},
                               {":variant/so-consequences": [":so-sequence-feature/name"]},
-                              {":variang/gene": [":gene/hgnc-symbol"]}]]],
+                              {":variant/gene": [":gene/hgnc-symbol"]}]]],
     ":where":
     [["?v", ":variant/id"]]
 }
