@@ -22,7 +22,7 @@ PatternQProvenance = namedtuple(
 
 # as in clojure walk/postwalk.
 def walk(inner, outer, coll):
-    if isinstance(coll, list):
+    if isinstance(coll, list) or isinstance(coll, tuple):
         return outer([inner(e) for e in coll])
     elif isinstance(coll, dict):
         return outer(dict([inner(e) for e in coll.items()]))
@@ -37,10 +37,8 @@ def postwalk(fn, coll):
 def maybe_flatten_enum(elem):
     if isinstance(elem, dict):
         if ":db/ident" in elem:
-            if len(elem.keys()) == 1:
-                return elem[":db/ident"]
+            return elem[":db/ident"]
     return elem
-
 
 def flatten_enum_idents(qres):
     """Given query results as parsed by json, flattens all enums to contain
@@ -72,6 +70,7 @@ def pull2fields(qres):
     pull expression into fields using common assumptions.
     """
     query_result = qres["query_result"]
+    query_result = flatten_enum_idents(query_result)
     flat_df = pd.DataFrame(query_result, columns=["pull"])
     return pd.json_normalize(flat_df['pull'])
 

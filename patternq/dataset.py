@@ -28,7 +28,6 @@ def samples(dataset, db_name=None, **kwargs):
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
-    qres_df = pqh.add_provenance(qres_df, qres)
     return qres_df
 
 
@@ -44,7 +43,6 @@ def datasets(db_name=None, **kwargs):
     qres = pqq.query(datasetsq, db_name=db_name, **kwargs)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
-    qres_df = pqh.add_provenance(qres_df, qres)
     return qres_df
 
 
@@ -63,7 +61,7 @@ def assays_for_patient(id, **kwargs):
              ["?a", ":assay/technology", "?at"],
              ["?a", ":assay/name", "?a-name"],
              ["?at", ":db/ident", "?a-tech"]]},
-        args=["TCGA-A7-A0DB"],
+        args=[id],
         **kwargs
     )
     col_vars = ["subject-id", "sample-id", "assay-tech",
@@ -94,6 +92,7 @@ all_subjects_q = {
 def all_subjects(dataset="tcga-brca", db_name=None, **kwargs):
     qres = pqq.query(all_subjects_q, args=[dataset],
                      db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df

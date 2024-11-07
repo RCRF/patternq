@@ -2,6 +2,8 @@ import pandas as pd
 import patternq.query as pqq
 import patternq.dataset as pqd
 import patternq.reference as pqr
+import patternq.helpers as pqh
+from patternq.helpers import flatten_enum_idents
 
 sub_id = "TCGA-A7-A0DB"
 assays = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
@@ -41,6 +43,6 @@ for i in range(1000000):
 
 
 patients = pqd.all_subjects(dataset="tcga-brca", db_name="tcga-brca")
-patients.columns
+patients
 
-patients['subject-race']
+
