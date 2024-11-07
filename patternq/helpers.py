@@ -46,6 +46,21 @@ def flatten_enum_idents(qres):
     {:db/ident :some/ident}"""
     return postwalk(maybe_flatten_enum, qres)
 
+def expand_many_nested(qres_df, attribute):
+    """Given query results as previously JSON normalized in a data frame, we extract
+    the nested entities, normalize them separately, then join them back in appropriately."""
+    qres_df = qres_df.explode(column=attribute)
+    qres_df["nested-db-id###"] = qres_df[attribute].apply(lambda l: l[":db/id"])
+    nested_entities = pd.json_normalize(qres_df[attribute].tolist())
+    nested_entities = clean_column_names(nested_entities)
+    result = qres_df.merge(
+        nested_entities,
+        left_on="nested-db-id###",
+        right_on="db-id",
+        how="left"
+    )
+    result = result.drop(columns=['db-id_x', 'db-id_y', 'nested-db-id###'])
+    return result
 
 def clean_column_names(df):
     """Clean the column names as returned by common patternq queries, with or

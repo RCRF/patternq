@@ -45,6 +45,43 @@ def datasets(db_name=None, **kwargs):
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df
 
+assay_summary_q ={
+    ":find": [["pull", "?a",
+                ["*",
+                 {":assay/technology": [":db/ident"]},
+                 {":assay/measurement-sets" : [":db/id",
+                                               ":measurement-set/name",
+                                               ":measurement-set/description"]}]]],
+    ":in": ["$", "?dataset-name"],
+     ":where":
+     [["?d", ":dataset/name", "?dataset-name"],
+      ["?d", ":dataset/assays", "?a"]]
+}
+
+def assay_summary(dataset, db_name=None, **kwargs):
+    qres = pqq.query(assay_summary_q, db_name=db_name, args=[dataset])
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    qres_df = pqh.expand_many_nested(qres_df, "assay-measurement-sets")
+    return qres_df
+
+clinical_summary_q = {
+    ":find": [["pull", "?co", [":clinical-observation-set/name",
+                               ":clinical-observation-set/description"]]],
+    ":in": ["$", "?dataset-name"],
+    ":where":
+    [["?d", ":dataset/name", "?dataset-name"],
+     ["?d", ":dataset/clinical-observation-sets", "?co"]]
+}
+
+def clinical_summary(dataset, db_name=None, **kwargs):
+    qres = pqq.query(clinical_summary_q, db_name=db_name, args=[dataset])
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
+
 
 def assays_for_patient(id, **kwargs):
     qres = pqq.query(
@@ -83,6 +120,7 @@ all_subjects_q = {
                 {":subject/therapies": [":therapy/order",
                                         {":therapy/treatment-regimen":
                                          [":treatment-regimen/name"]}]}]]],
+    ":in": ["$", "?dataset-name"],
     ":where": [
         ["?d", ":dataset/name", "?dataset-name"],
         ["?d", ":dataset/subjects", "?s"]
@@ -95,6 +133,7 @@ def all_subjects(dataset="tcga-brca", db_name=None, **kwargs):
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
+    qres_df = qres_df.explode(column="subject-race")
     return qres_df
 
 

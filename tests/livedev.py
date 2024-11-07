@@ -3,7 +3,6 @@ import patternq.query as pqq
 import patternq.dataset as pqd
 import patternq.reference as pqr
 import patternq.helpers as pqh
-from patternq.helpers import flatten_enum_idents
 
 sub_id = "TCGA-A7-A0DB"
 assays = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
@@ -30,16 +29,14 @@ sites = pqr.gdc_anatomic_sites(db_name='tcga-brca')
 sites
 
 
-resp = pqq.datoms(":aevt", [":measurement/rsem-normalized-count"], db_name='tcga-brca')
-sample_chunk = resp["datoms_chunk"]
+assays = pqd.assay_summary("tcga-brca", db_name='tcga-brca')
+assays[["assay-name", "measurement-set-name"]]
 
+clin_sum = pqd.clinical_summary("tcga-brca", db_name='tcga-brca')
+clin_sum
 
-meas_gen = pqd.measurement_generator()
-next(meas_gen)
-
-
-for i in range(1000000):
-    print(next(meas_gen))
+result
+result["measurement-set-measurements"]
 
 
 patients = pqd.all_subjects(dataset="tcga-brca", db_name="tcga-brca")
