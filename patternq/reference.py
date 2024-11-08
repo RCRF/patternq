@@ -53,6 +53,7 @@ all_variants_q = {
                               {":variant/classification": [":db/ident"]},
                               {":variant/type": [":db/ident"]},
                               {":variant/feature": [":db/ident"]},
+                              {":variant/genomic-coordinates": [":genomic-coordinate/id"]},
                               {":variant/so-consequences": [":so-sequence-feature/name"]},
                               {":variant/gene": [":gene/hgnc-symbol"]}]]],
     ":where":
