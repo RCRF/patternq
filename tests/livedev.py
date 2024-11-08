@@ -4,6 +4,8 @@ import patternq.dataset as pqd
 import patternq.reference as pqr
 import patternq.helpers as pqh
 
+pd.options.display.max_columns = 10
+
 sub_id = "TCGA-A7-A0DB"
 assays_for_sub = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
 assays_for_sub
@@ -50,7 +52,7 @@ var
 
 # -- for tcga, too large
 # meas = pqd.all_measurements("tcga-brca", "baseline mutations", db_name="tcga-brca",
-                            timeout=120)
+#                             timeout=120)
 #.meas
 
 
