@@ -167,7 +167,7 @@ def all_measurements(dataset, measurement_set, db_name=None, **kwargs):
 
 
 sample_q = all_measurements_q.copy()
-sample_q[":in"].append("?sample-id")
+sample_q[":in"].append(["?sample-id", "..."])
 sample_q[":where"] = sample_q[":where"][:4] + \
     [["?d", ":dataset/samples", "?s"],
      ["?s", ":sample/id", "?sample-id"]] + \
@@ -175,8 +175,8 @@ sample_q[":where"] = sample_q[":where"][:4] + \
     [["?m", ":measurement/sample", "?s"]]
 sample_measurements_q = sample_q
 
-def sample_measurements(dataset, measurement_set, sample_id, db_name=None, **kwargs):
-    qres = pqq.query(sample_measurements_q, args=[dataset, measurement_set, sample_id],
+def sample_measurements(dataset, measurement_set, sample_ids, db_name=None, **kwargs):
+    qres = pqq.query(sample_measurements_q, args=[dataset, measurement_set, sample_ids],
                      db_name=db_name, **kwargs)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
