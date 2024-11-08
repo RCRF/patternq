@@ -51,6 +51,8 @@ def gdc_anatomic_sites(db_name=None, **kwargs):
 all_variants_q = {
     ":find": [["pull", "?v", ["*",
                               {":variant/classification": [":db/ident"]},
+                              {":variant/type": [":db/ident"]},
+                              {":variant/feature": [":db/ident"]},
                               {":variant/so-consequences": [":so-sequence-feature/name"]},
                               {":variant/gene": [":gene/hgnc-symbol"]}]]],
     ":where":
