@@ -7,12 +7,13 @@ import patternq.helpers as pqh
 pd.options.display.max_columns = 10
 
 sub_id = "TCGA-A7-A0DB"
-assays_for_sub = pqd.assays_for_patient(sub_id, db_name='tcga-brca')
+assays_for_sub = pqd.assays_for_patients([sub_id], db_name='tcga-brca')
 assays_for_sub
 
 samples = pqd.samples("tcga-brca", db_name='tcga-brca')
 samples
 samples_sub = samples[samples["sample-subject-subject-id"] == sub_id]
+samples_sub
 
 datasets = pqd.datasets(db_name="tcga-brca")
 datasets
@@ -26,7 +27,6 @@ genes
 # -- this takes a little while, so uncomment with care --
 # measurements = pqd.measurements("gx", "rsem_normalized_count")
 # measurements
-
 sites = pqr.gdc_anatomic_sites(db_name='tcga-brca')
 sites
 
