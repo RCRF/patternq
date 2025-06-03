@@ -18,12 +18,27 @@ the latest version by re-installing frequently via:
 pip install --upgrade --force-reinstall git+ssh://git@github.com/RCRF/patternq.git
 ```
 
-## Use conventions
+## Configuring access
 
-Imports:
+Manage access to the query service by setting the endpoint and user credentials with environment variables:
 
 ```
-import patternq.query as pq
+PATTERNQ_ENDPOINT=https://data-commons.rcrf-dev.org
+PATTERNQ_API_KEY=${USER_API_KEY}
+```
+
+To obtain a user API key, access user settings from the Unify Central dashboard
+[here](https://data-commons.rcrf-dev.org/user-settings).
+
+## Import renames & other conventions of use
+
+The import alias naming convention 'pq' for the top level name, and `pq` + letter of
+submodule, e.g. `pqd` for other cases is recommended for consistency across projects.
+Examples:
+
+```
+import patternq as pq
+import patternq.query as pqq
 import patternq.datasets as pqd
 import patternq.reference as pqr
 ```
