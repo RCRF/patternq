@@ -15,16 +15,16 @@ def set_db(db_name):
 # todo: list databases
 
 def commons_endpoint():
-    default = "http://data-commons-query-dev.us-east-1.elasticbeanstalk.com"
+    default = "https://data-commons.rcrf-dev.org/query"
     endpoint = os.getenv("PATTERNQ_ENDPOINT")
     if not (endpoint and endpoint.startswith("http")):
         endpoint = default
     return endpoint
 
 def make_headers(accept="text/plain"):
-    bearer_token = os.getenv('PATTERNQ_BEARER_TOKEN')
+    bearer_token = os.getenv('PATTERNQ_API_KEY')
     if not bearer_token:
-        raise Exception("Must set PATTERNQ_BEARER_TOKEN in environment to use query!")
+        raise Exception("Must set PATTERNQ_API_KEY in environment to use query!")
     return {"Authorization": f"Bearer {bearer_token}",
             "Accept": accept}
 
