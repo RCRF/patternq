@@ -19,7 +19,6 @@ samplesq = {
                ["?d", ":dataset/samples", "?s"]]
 }
 
-
 def samples(dataset, db_name=None, **kwargs):
     """Return all samples"""
     qres = pqq.query(samplesq, args=[dataset], db_name=db_name, **kwargs)
@@ -36,7 +35,6 @@ datasetsq = {
                               ":dataset/url", ":dataset/doi"]]],
     ":where": [["?d", ":dataset/name"]]
 }
-
 
 def datasets(db_name=None, **kwargs):
     """Returns all datasets contained in a database"""
@@ -83,10 +81,36 @@ def clinical_summary(dataset, db_name=None, **kwargs):
     return qres_df
 
 
-def assays_for_patient(id, **kwargs):
+clinical_observations_q = {
+    ":find": [["pull", "?co", ["*",
+                               {":clinical-observation/timepoint": [":timepoint/id"]},
+                               {":clinical-observation/subject": [":subject/id"]},
+                               {":clinical-observation/study-day": [":study-day/id",
+                                                                    ":study-day/day"]},
+                               {":clinical-observation/bor": [":db/ident"]},
+                               {":clinical-observation/dfi-reason": [":db/ident"]},
+                               {":clinical-observation/ttf-reason": [":db/ident"]},
+                               {":clinical-observation/ir-recist": [":db/ident"]},
+                               {":clinical-observation/os-reason": [":db/ident"]},
+                               {":clinical-observation/rano": [":db/ident"]},
+                               {":clinical-observation/recist": [":db/ident"]},
+                               {":clinical-observation/pfs-reason": [":db/ident"]},
+                               {":clinical-observation/disease-stage": [":db/ident"]}]]]
+}
+
+def clinical_observations(dataset, clinical_observation_set, db_name=None, **kwargs):
+    pass
+
+
+def clinical_observations_for_patients(dataset, subject_ids,
+                                       db_name=None, **kwargs):
+    pass
+
+
+def assays_for_patients(patient_ids, **kwargs):
     qres = pqq.query(
         {":find": ["?subject-id", "?sample-id", "?a-tech", "?a-name", "?ms-name"],
-         ":in": ["$", "?subject-id"],
+         ":in": ["$", ["?subject-id", "..."]],
          ":where": [
              ["?p", ":subject/id", "?subject-id"],
              ["?s", ":sample/subject", "?p"],
@@ -98,7 +122,7 @@ def assays_for_patient(id, **kwargs):
              ["?a", ":assay/technology", "?at"],
              ["?a", ":assay/name", "?a-name"],
              ["?at", ":db/ident", "?a-tech"]]},
-        args=[id],
+        args=[patient_ids],
         **kwargs
     )
     col_vars = ["subject-id", "sample-id", "assay-tech",
@@ -139,8 +163,9 @@ def all_subjects(dataset, db_name=None, **kwargs):
 
 all_measurements_q = {
     ":find": [["pull", "?m",
-               # todo: many more attributes
-               [{":measurement/variant": [":variant/id"]},
+               ["*",
+                {":measurement/variant": [":variant/id"]},
+                {":measurement/cnv": [":cnv/id"]},
                 {":measurement/sample": [":sample/id"]},
                 {":measurement/epitope": [":epitope/id",
                                           {":epitope/protein":
@@ -167,7 +192,7 @@ def all_measurements(dataset, measurement_set, db_name=None, **kwargs):
 
 
 sample_q = all_measurements_q.copy()
-sample_q[":in"].append("?sample-id")
+sample_q[":in"].append(["?sample-id", "..."])
 sample_q[":where"] = sample_q[":where"][:4] + \
     [["?d", ":dataset/samples", "?s"],
      ["?s", ":sample/id", "?sample-id"]] + \
@@ -175,8 +200,8 @@ sample_q[":where"] = sample_q[":where"][:4] + \
     [["?m", ":measurement/sample", "?s"]]
 sample_measurements_q = sample_q
 
-def sample_measurements(dataset, measurement_set, sample_id, db_name=None, **kwargs):
-    qres = pqq.query(sample_measurements_q, args=[dataset, measurement_set, sample_id],
+def sample_measurements(dataset, measurement_set, sample_ids, db_name=None, **kwargs):
+    qres = pqq.query(sample_measurements_q, args=[dataset, measurement_set, sample_ids],
                      db_name=db_name, **kwargs)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
@@ -199,7 +224,6 @@ def measurements_sql(measurement_set, measurement_attr):
                  on gp.gene = gene.db__id
                where ms.name = '{measurement_set}'
 """
-
 
 def measurements(measurement_set, measurement_attr):
     sql_query = measurements_sql(measurement_set, measurement_attr)

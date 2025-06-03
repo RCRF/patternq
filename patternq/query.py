@@ -5,29 +5,37 @@ import gzip as gz
 
 db = None
 
-def set_db(db_name):
-    """Sets a database as default query target for the duration of the session."""
-    global db
-    # todo: guard via API call to ensure that db_name exists.
-    db = db_name
-    return True
-
-# todo: list databases
-
 def commons_endpoint():
-    default = "http://data-commons-query-dev.us-east-1.elasticbeanstalk.com"
+    default = "https://data-commons.rcrf-dev.org"
     endpoint = os.getenv("PATTERNQ_ENDPOINT")
     if not (endpoint and endpoint.startswith("http")):
         endpoint = default
     return endpoint
 
 def make_headers(accept="text/plain"):
-    bearer_token = os.getenv('PATTERNQ_BEARER_TOKEN')
+    bearer_token = os.getenv('PATTERNQ_API_KEY')
     if not bearer_token:
-        raise Exception("Must set PATTERNQ_BEARER_TOKEN in environment to use query!")
+        raise Exception("Must set PATTERNQ_API_KEY in environment to use query!")
     return {"Authorization": f"Bearer {bearer_token}",
             "Accept": accept}
 
+
+def list_datasets():
+    endpoint = f"{commons_endpoint()}/api-v1/list/datasets"
+    headers = make_headers(accept="application/json")
+    resp = requests.post(endpoint, headers=headers)
+    if resp.status_code != 200:
+        resp.raise_for_status()
+    else:
+        return resp.json()
+
+
+def set_db(db_name):
+    """Sets a database as default query target for the duration of the session."""
+    global db
+    # todo: guard via API call to ensure that db_name exists.
+    db = db_name
+    return True
 
 def query(q_dict, args=None, session=None, timeout=30, db_name=None):
     """Issue a query to the Pattern.org Data Commons query service.
