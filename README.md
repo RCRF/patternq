@@ -43,4 +43,7 @@ import patternq.datasets as pqd
 import patternq.reference as pqr
 ```
 
+## LICENSE
+
+Made available under the Apache 2.0 License by the Rare Cancer Research Foundation.
 
