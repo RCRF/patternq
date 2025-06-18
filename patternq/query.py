@@ -1,6 +1,8 @@
 import json
 import os
 import requests
+from io import BytesIO
+from tempfile import NamedTemporaryFile
 import gzip as gz
 
 db = None
@@ -100,3 +102,24 @@ def datoms(index, components, offset=0, limit=1000,
             print(json.loads(resp.content))
         finally:
             resp.raise_for_status()
+
+
+def get_measurement_matrix(matrix_key, session=None, db_name=None):
+    if not session:
+        session = requests
+    req_body = {}
+    if db_name is None:
+        db_name = db
+    headers = make_headers(accept="text/plain")
+    endpoint = f"{commons_endpoint()}/matrix/{db_name}/{matrix_key}"
+    fd = NamedTemporaryFile()
+    try:
+        resp = requests.post(
+            endpoint,
+            json.dumps(req_body),
+            headers=headers,
+        )
+        return pd.read_csv(BytesIO(resp.content), header=0, sep='\t')
+    except requests.exceptions.RequestException as e:
+        # just re-raise until we decide how to handle
+        raise e
