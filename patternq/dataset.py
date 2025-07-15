@@ -157,7 +157,8 @@ def all_subjects(dataset, db_name=None, **kwargs):
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
-    qres_df = qres_df.explode(column="subject-race")
+    if "subject-race" in qres_df.columns:
+        qres_df = qres_df.explode(column="subject-race")
     return qres_df
 
 
