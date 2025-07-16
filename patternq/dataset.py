@@ -133,7 +133,7 @@ patient_assays_q = {
 }
 
 
-def patient_assays(dataset: str, patient_ids: str or None = None,
+def patient_assays(dataset: str, patient_ids: List[str],
                    db_name: str or None = None, **kwargs):
     qres = pqq.query(patient_assays_q, db_name=db_name,
                      args=[dataset, patient_ids],
