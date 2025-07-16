@@ -5,16 +5,18 @@ from io import BytesIO
 from tempfile import NamedTemporaryFile
 import gzip as gz
 
+from typing import Any, List, Dict
+
 db = None
 
-def commons_endpoint():
+def commons_endpoint() -> str:
     default = "https://data-commons.rcrf-dev.org"
     endpoint = os.getenv("PATTERNQ_ENDPOINT")
     if not (endpoint and endpoint.startswith("http")):
         endpoint = default
     return endpoint
 
-def make_headers(accept="text/plain"):
+def make_headers(accept="text/plain") -> Dict[str, str]:
     bearer_token = os.getenv('PATTERNQ_API_KEY')
     if not bearer_token:
         raise Exception("Must set PATTERNQ_API_KEY in environment to use query!")
@@ -22,7 +24,7 @@ def make_headers(accept="text/plain"):
             "Accept": accept}
 
 
-def list_datasets():
+def list_datasets() -> List[str]:
     endpoint = f"{commons_endpoint()}/api-v1/list/datasets"
     headers = make_headers(accept="application/json")
     resp = requests.post(endpoint, headers=headers)
@@ -32,17 +34,21 @@ def list_datasets():
         return resp.json()
 
 
-def set_db(db_name):
+def set_db(db_name: str):
     """Sets a database as default query target for the duration of the session."""
     global db
     # todo: guard via API call to ensure that db_name exists.
     db = db_name
     return True
 
-def query(q_dict, args=None, session=None, timeout=30, db_name=None):
+def query(q_dict: Dict[str, List[Any]], args=List[Any], session: requests.Session or None = None,
+          timeout: int = 30, db_name: str | None = None):
     """Issue a query to the Pattern.org Data Commons query service.
     If `session` is provided, will use an existing requests session and its connection pool.
-    Use this to batch multiple queries."""
+    Use this to batch multiple queries.
+
+    TODO: can strengthen type signature of query by referring to Datomic Datalog
+    query grammar."""
     if not session:
         session = requests
     req_body = {"query": q_dict,
