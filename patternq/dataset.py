@@ -227,6 +227,31 @@ def sample_measurements(dataset: str, measurement_set: str, sample_ids: List[str
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df
 
+
+measurement_matrices_q = {
+    ":find": ["?assay-name","?ms-name","?mm-name", "?mm-type", "?matrix-key"],
+    ":in": ["$", "?dataset-name"],
+    ":where": [
+        ["?d", ":dataset/name", "?dataset-name"],
+        ["?d", ":dataset/assays", "?a"],
+        ["?a", ":assay/name", "?assay-name"],
+        ["?a", ":assay/measurement-sets", "?ms"],
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?ms", ":measurement-set/measurement-matrices", "?mm"],
+        ["?mm", ":measurement-matrix/name", "?mm-name"],
+        ["?mm", ":measurement-matrix/measurement-type", "?mm-type"],
+        ["?mm", ":measurement-matrix/backing-file", "?matrix-key"]
+    ]
+}
+
+def measurement_matrices(dataset: str, db_name: str or None = None, **kwargs):
+    qres = pqq.query(measurement_matrices_q, args=[dataset], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    columns = ["assay-name", "measurement-set-name", "measurement-matrix-name",
+               "measurement-matrix-measurement-type", "measurement-matrix-key"]
+    return pd.DataFrame(qres["query_result"], columns=columns)
+
+
 # TBD: query builder that's presto SQL compatible to handle
 #      avoiding injection, programmatic patterns, etc, this should
 #      go in separate namespace when available.
