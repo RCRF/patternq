@@ -5,16 +5,21 @@ from io import BytesIO
 from tempfile import NamedTemporaryFile
 import gzip as gz
 
+from typing import Any, List, Dict
+
+import pandas as pd
+
+
 db = None
 
-def commons_endpoint():
+def commons_endpoint() -> str:
     default = "https://data-commons.rcrf-dev.org"
     endpoint = os.getenv("PATTERNQ_ENDPOINT")
     if not (endpoint and endpoint.startswith("http")):
         endpoint = default
     return endpoint
 
-def make_headers(accept="text/plain"):
+def make_headers(accept="text/plain") -> Dict[str, str]:
     bearer_token = os.getenv('PATTERNQ_API_KEY')
     if not bearer_token:
         raise Exception("Must set PATTERNQ_API_KEY in environment to use query!")
@@ -22,7 +27,7 @@ def make_headers(accept="text/plain"):
             "Accept": accept}
 
 
-def list_datasets():
+def list_datasets() -> List[str]:
     endpoint = f"{commons_endpoint()}/api-v1/list/datasets"
     headers = make_headers(accept="application/json")
     resp = requests.post(endpoint, headers=headers)
@@ -32,17 +37,21 @@ def list_datasets():
         return resp.json()
 
 
-def set_db(db_name):
+def set_db(db_name: str):
     """Sets a database as default query target for the duration of the session."""
     global db
     # todo: guard via API call to ensure that db_name exists.
     db = db_name
     return True
 
-def query(q_dict, args=None, session=None, timeout=30, db_name=None):
+def query(q_dict: Dict[str, List[Any]], args:List[Any] or None = None, session: requests.Session or None = None,
+          timeout: int = 30, db_name: str or None = None):
     """Issue a query to the Pattern.org Data Commons query service.
     If `session` is provided, will use an existing requests session and its connection pool.
-    Use this to batch multiple queries."""
+    Use this to batch multiple queries.
+
+    TODO: can strengthen type signature of query by referring to Datomic Datalog
+    query grammar."""
     if not session:
         session = requests
     req_body = {"query": q_dict,
@@ -104,7 +113,8 @@ def datoms(index, components, offset=0, limit=1000,
             resp.raise_for_status()
 
 
-def get_measurement_matrix(matrix_key, session=None, db_name=None):
+def get_measurement_matrix(matrix_key: str, session: requests.Session or None = None,
+                           db_name: str or None = None):
     if not session:
         session = requests
     req_body = {}
@@ -112,14 +122,21 @@ def get_measurement_matrix(matrix_key, session=None, db_name=None):
         db_name = db
     headers = make_headers(accept="text/plain")
     endpoint = f"{commons_endpoint()}/matrix/{db_name}/{matrix_key}"
-    fd = NamedTemporaryFile()
+    # TODO: cache/store to named temporary file?
+    fd = NamedTemporaryFile(mode="wb", delete=False)
+    print(f"Writing measurement matrix to local disk as: {fd.name}")
     try:
         resp = requests.post(
             endpoint,
             json.dumps(req_body),
             headers=headers,
         )
-        return pd.read_csv(BytesIO(resp.content), header=0, sep='\t')
+        s3_presigned_url = resp.content
+        r = requests.get(s3_presigned_url, stream=True)
+        for chunk in r.iter_content(chunk_size=1024*8):
+            fd.write(chunk)
+        fd.close()
+        return pd.read_csv(fd.name, compression='gzip', header=0, sep='\t')
     except requests.exceptions.RequestException as e:
         # just re-raise until we decide how to handle
         raise e
