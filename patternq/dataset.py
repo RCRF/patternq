@@ -166,7 +166,7 @@ subjects_q = {
 }
 
 
-def subjects(dataset: str, db_name: str | None = None, **kwargs):
+def subjects(dataset: str, db_name: str or None = None, **kwargs):
     qres = pqq.query(subjects_q, args=[dataset],
                      db_name=db_name, **kwargs)
     qres = pqh.flatten_enum_idents(qres)

@@ -41,8 +41,8 @@ def set_db(db_name: str):
     db = db_name
     return True
 
-def query(q_dict: Dict[str, List[Any]], args=List[Any], session: requests.Session or None = None,
-          timeout: int = 30, db_name: str | None = None):
+def query(q_dict: Dict[str, List[Any]], args:List[Any] or None = None, session: requests.Session or None = None,
+          timeout: int = 30, db_name: str or None = None):
     """Issue a query to the Pattern.org Data Commons query service.
     If `session` is provided, will use an existing requests session and its connection pool.
     Use this to batch multiple queries.
