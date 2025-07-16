@@ -229,7 +229,7 @@ def sample_measurements(dataset: str, measurement_set: str, sample_ids: List[str
 
 
 measurement_matrices_q = {
-    ":find": ["?assay-name","?ms-name","?mm-name", "?mm-type", "?matrix-key"],
+    ":find": ["?assay-name","?ms-name","?mm-name", "?mm-type-name", "?matrix-key"],
     ":in": ["$", "?dataset-name"],
     ":where": [
         ["?d", ":dataset/name", "?dataset-name"],
@@ -240,6 +240,7 @@ measurement_matrices_q = {
         ["?ms", ":measurement-set/measurement-matrices", "?mm"],
         ["?mm", ":measurement-matrix/name", "?mm-name"],
         ["?mm", ":measurement-matrix/measurement-type", "?mm-type"],
+        ["?mm-type", ":db/ident", "?mm-type-name"],
         ["?mm", ":measurement-matrix/backing-file", "?matrix-key"]
     ]
 }
