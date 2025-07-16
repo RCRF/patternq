@@ -1,3 +1,4 @@
+import copy
 from typing import List
 
 import pandas as pd
@@ -41,11 +42,10 @@ datasetsq = {
 
 def datasets(db_name: str or None = None, **kwargs):
     """Returns all datasets contained in a database"""
-    raise NotImplementedError("Will be re-implemented after Unify Central changes re: credentials conveyance.")
-    # qres = pqq.query(datasetsq, db_name=db_name, **kwargs)
-    # qres_df = pqh.pull2fields(qres)
-    # qres_df = pqh.clean_column_names(qres_df)
-    # return qres_df
+    qres = pqq.query(datasetsq, db_name=db_name, **kwargs)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
 
 
 assay_summary_q = {
@@ -209,7 +209,7 @@ def measurements(dataset: str, measurement_set: str,
     return qres_df
 
 
-sample_q = measurements_q.copy()
+sample_q = copy.deepcopy(measurements_q)
 sample_q[":in"].append(["?sample-id", "..."])
 sample_q[":where"] = sample_q[":where"][:4] + \
                      [["?d", ":dataset/samples", "?s"],
@@ -229,7 +229,7 @@ def sample_measurements(dataset: str, measurement_set: str, sample_ids: List[str
 
 
 measurement_matrices_q = {
-    ":find": ["?assay-name","?ms-name","?mm-name", "?mm-type-name", "?matrix-key"],
+    ":find": ["?assay-name", "?ms-name", "?mm-name", "?mm-type-name", "?matrix-key"],
     ":in": ["$", "?dataset-name"],
     ":where": [
         ["?d", ":dataset/name", "?dataset-name"],
@@ -245,13 +245,13 @@ measurement_matrices_q = {
     ]
 }
 
+
 def measurement_matrices(dataset: str, db_name: str or None = None, **kwargs):
     qres = pqq.query(measurement_matrices_q, args=[dataset], db_name=db_name, **kwargs)
     qres = pqh.flatten_enum_idents(qres)
     columns = ["assay-name", "measurement-set-name", "measurement-matrix-name",
                "measurement-matrix-measurement-type", "measurement-matrix-key"]
     return pd.DataFrame(qres["query_result"], columns=columns)
-
 
 # TBD: query builder that's presto SQL compatible to handle
 #      avoiding injection, programmatic patterns, etc, this should
