@@ -1,13 +1,11 @@
 import pandas as pd
-import patternq.query as pqq
 import patternq.dataset as pqd
 import patternq.reference as pqr
-import patternq.helpers as pqh
 
 pd.options.display.max_columns = 10
 
 sub_id = "TCGA-A7-A0DB"
-assays_for_sub = pqd.assays_for_patients([sub_id], db_name='tcga-brca')
+assays_for_sub = pqd.patient_assays('tcga-brca', [sub_id], db_name='tcga-brca')
 assays_for_sub
 
 samples = pqd.samples("tcga-brca", db_name='tcga-brca')
@@ -24,9 +22,9 @@ gsyms
 genes = pqr.genes(db_name='tcga-brca', timeout=90)
 genes
 
-# -- this takes a little while, so uncomment with care --
-# measurements = pqd.measurements("gx", "rsem_normalized_count")
-# measurements
+measurements = pqd.measurements('tcga-brca', "tumor purity", db_name="tcga-brca")
+measurements
+
 sites = pqr.gdc_anatomic_sites(db_name='tcga-brca')
 sites
 
@@ -49,13 +47,5 @@ var
 # vars = pqr.variants("tcga-brca", timeout=120)
 # vars
 
-
-# -- for tcga, too large
-# meas = pqd.all_measurements("tcga-brca", "baseline mutations", db_name="tcga-brca",
-#                             timeout=120)
-#.meas
-
-
-patients = pqd.all_subjects("tcga-brca", db_name="tcga-brca")
+patients = pqd.subjects("tcga-brca", db_name="tcga-brca")
 patients
-

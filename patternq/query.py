@@ -27,14 +27,16 @@ def make_headers(accept="text/plain") -> Dict[str, str]:
             "Accept": accept}
 
 
-def list_datasets() -> List[str]:
-    endpoint = f"{commons_endpoint()}/api-v1/list/datasets"
-    headers = make_headers(accept="application/json")
-    resp = requests.post(endpoint, headers=headers)
-    if resp.status_code != 200:
-        resp.raise_for_status()
-    else:
-        return resp.json()
+# -- TODO: waiting on list API auth conveyance changes --
+#
+#def list_datasets() -> List[str]:
+#    endpoint = f"{commons_endpoint()}/api-v1/list/datasets"
+#    headers = make_headers(accept="application/json")
+#    resp = requests.post(endpoint, headers=headers)
+#    if resp.status_code != 200:
+#        resp.raise_for_status()
+#    else:
+#        return resp.json()
 
 
 def set_db(db_name: str):
