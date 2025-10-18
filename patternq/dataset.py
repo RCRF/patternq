@@ -25,8 +25,6 @@ samplesq = {
 def samples(dataset: str, db_name: str or None = None, **kwargs):
     """Return all samples"""
     qres = pqq.query(samplesq, args=[dataset], db_name=db_name, **kwargs)
-    prov_db_name = db_name if db_name else pqq.db
-    basis_t = qres["basis_t"]
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
@@ -88,32 +86,52 @@ def clinical_summary(dataset: str, db_name: str or None = None, **kwargs):
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df
 
-
-clinical_observations_q = {
-    ":find": [["pull", "?co", ["*",
-                               {":clinical-observation/timepoint": [":timepoint/id"]},
-                               {":clinical-observation/subject": [":subject/id"]},
-                               {":clinical-observation/study-day": [":study-day/id",
-                                                                    ":study-day/day"]},
-                               {":clinical-observation/bor": [":db/ident"]},
-                               {":clinical-observation/dfi-reason": [":db/ident"]},
-                               {":clinical-observation/ttf-reason": [":db/ident"]},
-                               {":clinical-observation/ir-recist": [":db/ident"]},
-                               {":clinical-observation/os-reason": [":db/ident"]},
-                               {":clinical-observation/rano": [":db/ident"]},
-                               {":clinical-observation/recist": [":db/ident"]},
-                               {":clinical-observation/pfs-reason": [":db/ident"]},
-                               {":clinical-observation/disease-stage": [":db/ident"]}]]]
+clinical_query = {
+    ":find": [[
+        "pull", "?ce", ["*",
+            {":clinical-observation/timepoint": [
+                ":timepoint/id",
+                ":timepoint/name",
+                ":timepoint/relative-order"
+            ]},
+            {":clinical-intervention/anti-cancer-vaccine": [":db/ident"]},
+            {":clinical-observation/imaging": [":db/ident"]},
+            {":clinical-intervention/cancer-medication-category": [":db/ident"]},
+            {":clinical-intervention/surgery-type": [":db/ident"]},
+            {":clinical-intervention/treatment-regimen": [
+                "*",
+                {":clinical-intervention/drug-regimens": ["*"]}
+            ]},
+            {":clinical-intervention/biospecimen-collection": [":db/ident"]},
+            {":clinical-intervention/biospecimen-collection-site": [":db/ident"]},
+            {":clinical-intervention/biospecimen-type": [":db/ident"]},
+            {":clinical-intervention/biospecimen-derived-samples": [":sample/id"]},
+            {":clinical-intervention/timepoint": [
+                ":timepoint/id",
+                ":timepoint/name",
+                ":timepoint/relative-order"
+            ]}
+        ]
+    ]],
+    ":in": ["$", "?dataset", ["?patient-id", "..."]],
+    ":where": [
+        ["?d", ":dataset/name", "?dataset"],
+        ["?d", ":dataset/subjects", "?p"],
+        ["?p", ":subject/id", "?patient-id"],
+        ["or-join", ["?ce"],
+            ["?ce", ":clinical-intervention/subject", "?p"],
+            ["?ce", ":clinical-observation/subject", "?p"]
+        ]
+    ]
 }
 
-
-def clinical_observations(dataset, clinical_observation_set, db_name=None, **kwargs):
-    raise NotImplementedError("Clinical data queries will be implemented after next Pattern schema update.")
-
-
-def clinical_observations_for_patients(dataset, subject_ids,
-                                       db_name=None, **kwargs):
-    raise NotImplementedError("Clinical data queries will be implemented after next Pattern schema update.")
+def clinical_events_for_patients(dataset: str, subject_ids: List[str],
+                                   db_name=str or None, **kwargs):
+    qres = pqq.query(clinical_query, db_name=db_name, args=[dataset, subject_ids])
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
 
 
 patient_assays_q = {
@@ -252,70 +270,3 @@ def measurement_matrices(dataset: str, db_name: str or None = None, **kwargs):
     columns = ["assay-name", "measurement-set-name", "measurement-matrix-name",
                "measurement-matrix-measurement-type", "measurement-matrix-key"]
     return pd.DataFrame(qres["query_result"], columns=columns)
-
-# TBD: query builder that's presto SQL compatible to handle
-#      avoiding injection, programmatic patterns, etc, this should
-#      go in separate namespace when available.
-# def measurements_sql(measurement_set, measurement_attr):
-#    return f"""select sample.id, gene.hgnc_symbol, m.{measurement_attr}
-#               from measurement m
-#               join measurement_set_x_measurements msxm
-#                 on msxm.db__id = m.db__id
-#               join measurement_set ms
-#                 on ms.db__id = msxm.db__id
-#               join sample
-#                 on m.sample = sample.db__id
-#               join gene_product gp
-#                on m.gene_product = gp.db__id
-#               join gene
-#                 on gp.gene = gene.db__id
-#               where ms.name = '{measurement_set}'
-# """
-#
-# def sql_measurements(measurement_set, measurement_attr):
-#    sql_query = measurements_sql(measurement_set, measurement_attr)
-#    rows = trino.query(sql_query)
-#    return pd.DataFrame(rows, columns=["sample-id", "hgnc", "rsem"])
-#
-#
-#
-# TODO: prove out pattern in another iteration, for now simplify
-# def measurement_generator(meas_attr=":measurement/rsem-normalized-count", db_name=None,
-#                           chunk_size=5000):
-#     """Another approach to iterating through all measurements: using
-#     a generator with the datoms API. Ideally we would read ahead, re-use session,
-#     and load and iterate concurrently, but this is Python so that's not
-#     as trivial as e.g. a buffered channel and concurrency in Clojure."""
-#     offset = 0
-#     api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
-#                           offset=offset, limit=chunk_size)
-#     chunk = api_resp["datoms_chunk"]
-#     # -- todo: moving a pull pattern option to the client side for
-#     #.   the datoms API would save us a ton of time, so we don't have
-#     #.   to rehydrate (1) in Python, and (2) via client/server call
-#     while len(chunk) >= 1:
-#         meas_eids = [elem[":e"] for elem in chunk]
-#         meas_res = pqq.query({
-#             ":find": ["?m", "?hgnc", "?samp-id"],
-#             ":in": ["$", ["?m", "..."]],
-#             ":where":
-#                 [["?m", ":measurement/gene-product", "?gp"],
-#                  ["?gp", ":gene-product/gene", "?g"],
-#                  ["?g", ":gene/hgnc-symbol", "?hgnc"],
-#                  ["?m", ":measurement/sample", "?s"],
-#                  ["?s", ":sample/id", "?samp-id"]]
-#         },
-#             args=[meas_eids],
-#             db_name=db_name
-#         )
-#         lookup = dict([(meas[0], (meas[1], meas[2])) for meas in meas_res["query_result"]])
-#         for datom in chunk:
-#             eid = datom[":e"]
-#             match = lookup[eid]
-#             yield eid, match[0], match[1], datom[":v"]
-#         offset += chunk_size
-#         api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
-#                               offset=offset, limit=chunk_size)
-#         chunk = api_resp["datoms_chunk"]
-#     raise StopIteration
-#
