@@ -55,15 +55,21 @@ def gdc_anatomic_sites(db_name: str or None = None, **kwargs):
     gdc_sites = [relation[0] for relation in qres["query_result"]]
     return gdc_sites
 
+variant_pull = [":variant/ref-allele",
+                ":variant/alt-allele",
+                ":variant/alt-allele-2",
+                ":variant/id",
+                ":variant/ref-amino-acid",
+                ":variant/alt-amino-acid",
+                {":variant/classification": [":db/ident"]},
+                {":variant/type": [":db/ident"]},
+                {":variant/feature": [":db/ident"]},
+                {":variant/genomic-coordinates": [":genomic-coordinate/id"]},
+                {":variant/so-consequences": [":so-sequence-feature/name", ":db/id"]},
+                {":variant/gene": [":gene/hgnc-symbol"]}]
 
 all_variants_q = {
-    ":find": [["pull", "?v", ["*",
-                              {":variant/classification": [":db/ident"]},
-                              {":variant/type": [":db/ident"]},
-                              {":variant/feature": [":db/ident"]},
-                              {":variant/genomic-coordinates": [":genomic-coordinate/id"]},
-                              {":variant/so-consequences": [":so-sequence-feature/name"]},
-                              {":variant/gene": [":gene/hgnc-symbol"]}]]],
+    ":find": [["pull", "?v", variant_pull]],
     ":where":
         [["?v", ":variant/id"]]
 }
@@ -84,11 +90,27 @@ variant_q[":in"] = ["$", ["?variant-id", "..."]]
 variant_q[":where"][0].append("?variant-id")
 
 
-def variants(variant_ids: List[str], db_name: str or None = None, **kwargs):
+def variant_info(variant_ids: List[str], db_name: str or None = None, **kwargs):
     qres = pqq.query(variant_q, args=[variant_ids], db_name=db_name, **kwargs)
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
-    if "variant-so-consequences" in qres_df.columns:
-        qres_df = pqh.expand_many_nested(qres_df, "variant-so-consequences")
+    # TODO: investigate how this is working, atm it breaks things.
+    # if "variant-so-consequences" in qres_df.columns:
+    #    qres_df = pqh.expand_many_nested(qres_df, "variant-so-consequences")
+    return qres_df
+
+genes2variantsq = {
+    ":find": [["pull", "?v", variant_pull]],
+    ":in": ["$", ["?hgnc", "..."]],
+    ":where":
+    [["?g", ":gene/hgnc-symbol", "?hgnc"],
+     ["?v", ":variant/gene", "?g"]]
+}
+
+def variants_for_genes(genes: List[str], db_name: str or None = None, **kwargs):
+    qres = pqq.query(genes2variantsq, args=[genes], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
     return qres_df

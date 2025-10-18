@@ -270,3 +270,47 @@ def measurement_matrices(dataset: str, db_name: str or None = None, **kwargs):
     columns = ["assay-name", "measurement-set-name", "measurement-matrix-name",
                "measurement-matrix-measurement-type", "measurement-matrix-key"]
     return pd.DataFrame(qres["query_result"], columns=columns)
+
+variant_measurements_q = {
+    ":find": [
+        ["pull", "?m", [":measurement/vaf", {":measurement/sample": [":sample/id"],
+                                             ":measurement/variant": [":variant/id"]}]]
+    ],
+    ":in": [
+        "$",
+        "?ms-name"
+    ],
+    ":where": [
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?ms", ":measurement-set/measurements", "?m"],
+        ["?m", ":measurement/variant", "?v"],
+        ["?v", ":variant/id", "?var-id"]
+    ]
+}
+
+def variant_measurements(measurement_set: str, db_name: str or None = None, **kwargs):
+    qres = pqq.query(variant_measurements_q, args=[measurement_set], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
+
+
+var2measq = {
+    ":find": [
+        ["pull", "?m", [":measurement/vaf", {":measurement/sample": [":sample/id"],
+                                             ":measurement/variant": [":variant/id"],
+                                             ":measurement-set/_measurements": [":measurement-set/name"]}]]
+    ],
+    ":in": ["$", ["?variant-id", "..."]],
+    ":where":[
+        ["?v", ":variant/id", "?variant-id"],
+        ["?m", ":measurement/variant", "?v"]
+    ]
+}
+
+def measurements_of_variants(variant_ids: List[str], db_name: str or None = None, **kwargs):
+    qres = pqq.query(var2measq, args=[variant_ids], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    return qres_df
