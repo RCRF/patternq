@@ -388,3 +388,27 @@ cnv_query = {
 def cnv_by_gene_measurements(sample_id: str, measurement_set: str, db_name: str or None = None, **kwargs):
     qres = pqq.query(cnv_query, args=[sample_id, measurement_set], db_name=db_name, **kwargs)
     return pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", "log2-r-ratio", "copy-number"])
+
+
+cohort_expression_q = {
+    ":find": ["?value"],
+    ":in": ["$", "?meas-attr", "?hgnc"],
+    ":where": [
+        ["?g", ":gene/hgnc-symbol", "?hgnc"],
+        ["?gp", ":gene-product/gene", "?g"],
+        ["?m", ":measurement/gene-product", "?gp"],
+        ["?m", "?meas-attr", "?value"]
+    ]
+}
+
+def cohort_gene_expression(measurement_attr: RNASeqMeasurementAttribute, gene: str,
+                           db_name: str or None = None, **kwargs):
+    """This query will retrieve all gene expression values of a certain measurement
+    attribute, for the provided `gene` parameter. This is a simplified query,
+    intended to be performant in large cohort datasets, and does not filter based on,
+    assay measurement set, or samples, etc."""
+    meas_attr_ident = f":measurement/{measurement_attr}"
+    qres = pqq.query(cohort_expression_q, args=[meas_attr_ident, gene], db_name=db_name, **kwargs)
+    result = pd.DataFrame(qres["query_result"], columns=[measurement_attr])
+    result["hgnc-symbol"] = gene
+    return result
