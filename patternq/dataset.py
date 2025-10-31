@@ -1,10 +1,16 @@
 import copy
 from typing import List
+from typing import Literal
 
 import pandas as pd
 
 import patternq.helpers as pqh
 import patternq.query as pqq
+
+
+VariantImpact = Literal["modifier", "low", "moderate", "high"]
+RNASeqMeasurementAttribute = Literal["fpkm", "tpm", "rpkm", "rsem-normalized-count",
+                                     "kallisto-abundance", "rsem-raw-count", "rsem-scaled-estimate"]
 
 samplesq = {
     ":find": [["pull", "?s", ["*",
@@ -314,3 +320,71 @@ def measurements_of_variants(variant_ids: List[str], db_name: str or None = None
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     return qres_df
+
+
+variants_by_impact_query = {
+    ":find": ["?sample-id", "?ms-name", "?var-id", "?hgnc", "?consequence", "?impact", "?vaf"],
+    ":in": ["$", "?sample-id", "?ms-name", "?impact"],
+    ":where": [
+        ["?var", ":variant/impact", "?impact"],
+        ["?var", ":variant/id", "?var-id"],
+        ["?var", ":variant/so-consequences", "?soc"],
+        ["?soc", ":so-sequence-feature/name", "?consequence"],
+        ["?var", ":variant/gene", "?g"],
+        ["?g", ":gene/hgnc-symbol", "?hgnc"],
+        ["?m", ":measurement/variant", "?var"],
+        ["?m", ":measurement/vaf", "?vaf"],
+        ["?ms", ":measurement-set/measurements", "?m"],
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?m", ":measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"]
+    ]
+}
+
+def variants_by_impact(sample_id: str, measurement_set: str, impact: VariantImpact, db_name: str or None = None, **kwargs):
+    impact_ident = f":variant.impact/{impact}"
+    qres = pqq.query(variants_by_impact_query, args=[sample_id, measurement_set, impact_ident], db_name=db_name, **kwargs)
+    col_names = ["sample-id", "measurement-set-name", "variant-id", "hgnc-symbol", "so-consequence", "impact", "vaf"]
+    return pd.DataFrame(qres["query_result"], columns=col_names)
+
+
+simple_gx_query = {
+    ":find": ["?hgnc-symbol", "?value"],
+    ":in": ["$", "?sample-id", "?ms-name", "?meas-attr", ["?hgnc-symbol", "..."]],
+    ":where": [
+        ["?g," ":gene/hgnc-symbol", "?hgnc"],
+        ["?gp", ":gene-product/gene", "?g"],
+        ["?m", ":measurement/gene", "?g"],
+        ["?m", "?meas-attr", "?value"],
+        ["?m", "?measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"],
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?ms", ":measurement-set/measurements", "?m"]
+    ]
+}
+
+def gene_expression_for_genes(sample_id: str, measurement_set: str, measurement_attr: RNASeqMeasurementAttribute,
+                             genes: List[str], db_name: str or None = None, **kwargs):
+    measurement_attr_ident = f":measurement/{measurement_attr}"
+    qres = pqq.query(simple_gx_query, args=[sample_id, measurement_set, measurement_attr_ident, genes],
+                     db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", measurement_attr])
+
+cnv_query = {
+    ":find": ["?hgnc", "?lrr", "?cn"],
+    ":in": ["$", "?sample-id", "?ms-name"],
+    ":where": [
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?m", ":measurement/cnv", "?cnv"],
+        ["?m", ":measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"],
+        ["?m", ":measurement/a-allele-cn", "?cn"],
+        ["?m", ":measurement/segment-mean-lrr", "?lrr"],
+        ["?cnv", ":cnv/genes", "?g"],
+        ["?g", ":gene/hgnc-symbol", "?hgnc"]
+    ]
+}
+
+def cnv_by_gene_measurements(sample_id: str, measurement_set: str, db_name: str or None = None, **kwargs):
+    qres = pqq.query(cnv_query, args=[sample_id, measurement_set], db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", "log2-r-ratio", "copy-number"])

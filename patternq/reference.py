@@ -1,5 +1,7 @@
 from typing import List
 
+import pandas as pd
+
 import patternq.helpers as pqh
 import patternq.query as pqq
 
@@ -22,7 +24,8 @@ def gene_symbols(db_name: str or None = None, **kwargs):
 
 
 genes_query = {
-    ":find": [["pull", "?g", ["*"]]],
+    ":find": [["pull", "?g", ["*", {":gene/genomic-coordinates":
+                                    [":genomic-coordinate/id"]}]]],
     ":where":
         [["?g", ":gene/hgnc-symbol"]]
 }
@@ -41,12 +44,31 @@ def genes(db_name: str or None = None, **kwargs):
     return qres_df
 
 
+gene_coords_query = {
+    ":find": ["?hgnc", "?contig", "?strand", "?start", "?end"],
+    ":where":
+    [
+        ["?g", ":gene/hgnc-symbol", "?hgnc"],
+        ["?g", ":gene/genomic-coordinates", "?gc"],
+        ["?gc", ":genomic-coordinate/contig", "?contig"],
+        ["?gc", ":genomic-coordinate/strand", "?strand"],
+        ["?gc", ":genomic-coordinate/start", "?start"],
+        ["?gc", ":genomic-coordinate/end", "?end"],
+    ]
+}
+
+def gene_coordinates(db_name: str or None = None, **kwargs):
+    qres = pqq.query(gene_coords_query, db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", "contig", "strand", "start", "end"])
+    return qres_df
+
+
 gdc_anatomic_sites_query = {
     ":find": ["?gdc-site"],
     ":where":
         [["_", ":gdc-anatomic-site/name", "?gdc-site"]]
 }
-
 
 def gdc_anatomic_sites(db_name: str or None = None, **kwargs):
     qres = pqq.query(gdc_anatomic_sites_query,
