@@ -59,7 +59,7 @@ def expand_many_nested(qres_df, attribute):
         right_on="db-id",
         how="left"
     )
-    result = result.drop(columns=['db-id_x', 'db-id_y', 'nested-db-id###'])
+    result = result.drop(columns=['db-id_x', 'db-id_y', 'db-id', 'nested-db-id###'], errors='ignore')
     return result
 
 def clean_column_names(df):

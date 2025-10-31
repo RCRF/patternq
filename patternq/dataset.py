@@ -1,10 +1,16 @@
 import copy
 from typing import List
+from typing import Literal
 
 import pandas as pd
 
 import patternq.helpers as pqh
 import patternq.query as pqq
+
+
+VariantImpact = Literal["modifier", "low", "moderate", "high"]
+RNASeqMeasurementAttribute = Literal["fpkm", "tpm", "rpkm", "rsem-normalized-count",
+                                     "kallisto-abundance", "rsem-raw-count", "rsem-scaled-estimate"]
 
 samplesq = {
     ":find": [["pull", "?s", ["*",
@@ -25,8 +31,6 @@ samplesq = {
 def samples(dataset: str, db_name: str or None = None, **kwargs):
     """Return all samples"""
     qres = pqq.query(samplesq, args=[dataset], db_name=db_name, **kwargs)
-    prov_db_name = db_name if db_name else pqq.db
-    basis_t = qres["basis_t"]
     qres = pqh.flatten_enum_idents(qres)
     qres_df = pqh.pull2fields(qres)
     qres_df = pqh.clean_column_names(qres_df)
@@ -88,32 +92,52 @@ def clinical_summary(dataset: str, db_name: str or None = None, **kwargs):
     qres_df = pqh.clean_column_names(qres_df)
     return qres_df
 
-
-clinical_observations_q = {
-    ":find": [["pull", "?co", ["*",
-                               {":clinical-observation/timepoint": [":timepoint/id"]},
-                               {":clinical-observation/subject": [":subject/id"]},
-                               {":clinical-observation/study-day": [":study-day/id",
-                                                                    ":study-day/day"]},
-                               {":clinical-observation/bor": [":db/ident"]},
-                               {":clinical-observation/dfi-reason": [":db/ident"]},
-                               {":clinical-observation/ttf-reason": [":db/ident"]},
-                               {":clinical-observation/ir-recist": [":db/ident"]},
-                               {":clinical-observation/os-reason": [":db/ident"]},
-                               {":clinical-observation/rano": [":db/ident"]},
-                               {":clinical-observation/recist": [":db/ident"]},
-                               {":clinical-observation/pfs-reason": [":db/ident"]},
-                               {":clinical-observation/disease-stage": [":db/ident"]}]]]
+clinical_query = {
+    ":find": [[
+        "pull", "?ce", ["*",
+            {":clinical-observation/timepoint": [
+                ":timepoint/id",
+                ":timepoint/name",
+                ":timepoint/relative-order"
+            ]},
+            {":clinical-intervention/anti-cancer-vaccine": [":db/ident"]},
+            {":clinical-observation/imaging": [":db/ident"]},
+            {":clinical-intervention/cancer-medication-category": [":db/ident"]},
+            {":clinical-intervention/surgery-type": [":db/ident"]},
+            {":clinical-intervention/treatment-regimen": [
+                "*",
+                {":clinical-intervention/drug-regimens": ["*"]}
+            ]},
+            {":clinical-intervention/biospecimen-collection": [":db/ident"]},
+            {":clinical-intervention/biospecimen-collection-site": [":db/ident"]},
+            {":clinical-intervention/biospecimen-type": [":db/ident"]},
+            {":clinical-intervention/biospecimen-derived-samples": [":sample/id"]},
+            {":clinical-intervention/timepoint": [
+                ":timepoint/id",
+                ":timepoint/name",
+                ":timepoint/relative-order"
+            ]}
+        ]
+    ]],
+    ":in": ["$", "?dataset", ["?patient-id", "..."]],
+    ":where": [
+        ["?d", ":dataset/name", "?dataset"],
+        ["?d", ":dataset/subjects", "?p"],
+        ["?p", ":subject/id", "?patient-id"],
+        ["or-join", ["?ce"],
+            ["?ce", ":clinical-intervention/subject", "?p"],
+            ["?ce", ":clinical-observation/subject", "?p"]
+        ]
+    ]
 }
 
-
-def clinical_observations(dataset, clinical_observation_set, db_name=None, **kwargs):
-    raise NotImplementedError("Clinical data queries will be implemented after next Pattern schema update.")
-
-
-def clinical_observations_for_patients(dataset, subject_ids,
-                                       db_name=None, **kwargs):
-    raise NotImplementedError("Clinical data queries will be implemented after next Pattern schema update.")
+def clinical_events_for_patients(dataset: str, subject_ids: List[str],
+                                   db_name=str or None, **kwargs):
+    qres = pqq.query(clinical_query, db_name=db_name, args=[dataset, subject_ids])
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
 
 
 patient_assays_q = {
@@ -253,69 +277,114 @@ def measurement_matrices(dataset: str, db_name: str or None = None, **kwargs):
                "measurement-matrix-measurement-type", "measurement-matrix-key"]
     return pd.DataFrame(qres["query_result"], columns=columns)
 
-# TBD: query builder that's presto SQL compatible to handle
-#      avoiding injection, programmatic patterns, etc, this should
-#      go in separate namespace when available.
-# def measurements_sql(measurement_set, measurement_attr):
-#    return f"""select sample.id, gene.hgnc_symbol, m.{measurement_attr}
-#               from measurement m
-#               join measurement_set_x_measurements msxm
-#                 on msxm.db__id = m.db__id
-#               join measurement_set ms
-#                 on ms.db__id = msxm.db__id
-#               join sample
-#                 on m.sample = sample.db__id
-#               join gene_product gp
-#                on m.gene_product = gp.db__id
-#               join gene
-#                 on gp.gene = gene.db__id
-#               where ms.name = '{measurement_set}'
-# """
-#
-# def sql_measurements(measurement_set, measurement_attr):
-#    sql_query = measurements_sql(measurement_set, measurement_attr)
-#    rows = trino.query(sql_query)
-#    return pd.DataFrame(rows, columns=["sample-id", "hgnc", "rsem"])
-#
-#
-#
-# TODO: prove out pattern in another iteration, for now simplify
-# def measurement_generator(meas_attr=":measurement/rsem-normalized-count", db_name=None,
-#                           chunk_size=5000):
-#     """Another approach to iterating through all measurements: using
-#     a generator with the datoms API. Ideally we would read ahead, re-use session,
-#     and load and iterate concurrently, but this is Python so that's not
-#     as trivial as e.g. a buffered channel and concurrency in Clojure."""
-#     offset = 0
-#     api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
-#                           offset=offset, limit=chunk_size)
-#     chunk = api_resp["datoms_chunk"]
-#     # -- todo: moving a pull pattern option to the client side for
-#     #.   the datoms API would save us a ton of time, so we don't have
-#     #.   to rehydrate (1) in Python, and (2) via client/server call
-#     while len(chunk) >= 1:
-#         meas_eids = [elem[":e"] for elem in chunk]
-#         meas_res = pqq.query({
-#             ":find": ["?m", "?hgnc", "?samp-id"],
-#             ":in": ["$", ["?m", "..."]],
-#             ":where":
-#                 [["?m", ":measurement/gene-product", "?gp"],
-#                  ["?gp", ":gene-product/gene", "?g"],
-#                  ["?g", ":gene/hgnc-symbol", "?hgnc"],
-#                  ["?m", ":measurement/sample", "?s"],
-#                  ["?s", ":sample/id", "?samp-id"]]
-#         },
-#             args=[meas_eids],
-#             db_name=db_name
-#         )
-#         lookup = dict([(meas[0], (meas[1], meas[2])) for meas in meas_res["query_result"]])
-#         for datom in chunk:
-#             eid = datom[":e"]
-#             match = lookup[eid]
-#             yield eid, match[0], match[1], datom[":v"]
-#         offset += chunk_size
-#         api_resp = pqq.datoms(":aevt", [meas_attr], db_name=db_name,
-#                               offset=offset, limit=chunk_size)
-#         chunk = api_resp["datoms_chunk"]
-#     raise StopIteration
-#
+variant_measurements_q = {
+    ":find": [
+        ["pull", "?m", [":measurement/vaf", {":measurement/sample": [":sample/id"],
+                                             ":measurement/variant": [":variant/id"]}]]
+    ],
+    ":in": [
+        "$",
+        "?ms-name"
+    ],
+    ":where": [
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?ms", ":measurement-set/measurements", "?m"],
+        ["?m", ":measurement/variant", "?v"],
+        ["?v", ":variant/id", "?var-id"]
+    ]
+}
+
+def variant_measurements(measurement_set: str, db_name: str or None = None, **kwargs):
+    qres = pqq.query(variant_measurements_q, args=[measurement_set], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    qres_df = pqh.clean_column_names(qres_df)
+    return qres_df
+
+
+var2measq = {
+    ":find": [
+        ["pull", "?m", [":measurement/vaf", {":measurement/sample": [":sample/id"],
+                                             ":measurement/variant": [":variant/id"],
+                                             ":measurement-set/_measurements": [":measurement-set/name"]}]]
+    ],
+    ":in": ["$", ["?variant-id", "..."]],
+    ":where":[
+        ["?v", ":variant/id", "?variant-id"],
+        ["?m", ":measurement/variant", "?v"]
+    ]
+}
+
+def measurements_of_variants(variant_ids: List[str], db_name: str or None = None, **kwargs):
+    qres = pqq.query(var2measq, args=[variant_ids], db_name=db_name, **kwargs)
+    qres = pqh.flatten_enum_idents(qres)
+    qres_df = pqh.pull2fields(qres)
+    return qres_df
+
+
+variants_by_impact_query = {
+    ":find": ["?sample-id", "?ms-name", "?var-id", "?hgnc", "?consequence", "?impact", "?vaf"],
+    ":in": ["$", "?sample-id", "?ms-name", "?impact"],
+    ":where": [
+        ["?var", ":variant/impact", "?impact"],
+        ["?var", ":variant/id", "?var-id"],
+        ["?var", ":variant/so-consequences", "?soc"],
+        ["?soc", ":so-sequence-feature/name", "?consequence"],
+        ["?var", ":variant/gene", "?g"],
+        ["?g", ":gene/hgnc-symbol", "?hgnc"],
+        ["?m", ":measurement/variant", "?var"],
+        ["?m", ":measurement/vaf", "?vaf"],
+        ["?ms", ":measurement-set/measurements", "?m"],
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?m", ":measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"]
+    ]
+}
+
+def variants_by_impact(sample_id: str, measurement_set: str, impact: VariantImpact, db_name: str or None = None, **kwargs):
+    impact_ident = f":variant.impact/{impact}"
+    qres = pqq.query(variants_by_impact_query, args=[sample_id, measurement_set, impact_ident], db_name=db_name, **kwargs)
+    col_names = ["sample-id", "measurement-set-name", "variant-id", "hgnc-symbol", "so-consequence", "impact", "vaf"]
+    return pd.DataFrame(qres["query_result"], columns=col_names)
+
+
+simple_gx_query = {
+    ":find": ["?hgnc-symbol", "?value"],
+    ":in": ["$", "?sample-id", "?ms-name", "?meas-attr", ["?hgnc-symbol", "..."]],
+    ":where": [
+        ["?g," ":gene/hgnc-symbol", "?hgnc"],
+        ["?gp", ":gene-product/gene", "?g"],
+        ["?m", ":measurement/gene", "?g"],
+        ["?m", "?meas-attr", "?value"],
+        ["?m", "?measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"],
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?ms", ":measurement-set/measurements", "?m"]
+    ]
+}
+
+def gene_expression_for_genes(sample_id: str, measurement_set: str, measurement_attr: RNASeqMeasurementAttribute,
+                             genes: List[str], db_name: str or None = None, **kwargs):
+    measurement_attr_ident = f":measurement/{measurement_attr}"
+    qres = pqq.query(simple_gx_query, args=[sample_id, measurement_set, measurement_attr_ident, genes],
+                     db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", measurement_attr])
+
+cnv_query = {
+    ":find": ["?hgnc", "?lrr", "?cn"],
+    ":in": ["$", "?sample-id", "?ms-name"],
+    ":where": [
+        ["?ms", ":measurement-set/name", "?ms-name"],
+        ["?m", ":measurement/cnv", "?cnv"],
+        ["?m", ":measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample-id"],
+        ["?m", ":measurement/a-allele-cn", "?cn"],
+        ["?m", ":measurement/segment-mean-lrr", "?lrr"],
+        ["?cnv", ":cnv/genes", "?g"],
+        ["?g", ":gene/hgnc-symbol", "?hgnc"]
+    ]
+}
+
+def cnv_by_gene_measurements(sample_id: str, measurement_set: str, db_name: str or None = None, **kwargs):
+    qres = pqq.query(cnv_query, args=[sample_id, measurement_set], db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["hgnc-symbol", "log2-r-ratio", "copy-number"])
