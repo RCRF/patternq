@@ -252,6 +252,27 @@ def sample_measurements(dataset: str, measurement_set: str, sample_ids: List[str
     return qres_df
 
 
+gx_by_attr_q = {
+    ":find": ["?sample", "?hgnc", "?value"],
+    ":in": ["$", "?meas-set", "?meas-attr"],
+    ":where": [
+        ["?ms", ":measurement-set/name", "?meas-set"],
+        ["?m", "?meas-attr", "?value"],
+        ["?m", ":measurement/gene-product", "?gp"],
+        ["?gp", ":gene-product/gene", "?g"],
+        ["?g", ":gene/hgnc-symbol", "?hgnc"],
+        ["?m", ":measurement/sample", "?s"],
+        ["?s", ":sample/id", "?sample"],
+    ]
+}
+
+def gene_expression_measurements(measurement_set: str, measurement_attr: RNASeqMeasurementAttribute,
+                                 db_name: str or None = None, **kwargs):
+    meas_attr_ident = f":measurement/{measurement_attr}"
+    qres = pqq.query(gx_by_attr_q, args=[measurement_set, meas_attr_ident], db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["sample-id", "hgnc-symbol", measurement_attr])
+
+
 measurement_matrices_q = {
     ":find": ["?assay-name", "?ms-name", "?mm-name", "?mm-type-name", "?matrix-key"],
     ":in": ["$", "?dataset-name"],
@@ -412,3 +433,18 @@ def cohort_gene_expression(measurement_attr: RNASeqMeasurementAttribute, gene: s
     result = pd.DataFrame(qres["query_result"], columns=[measurement_attr])
     result["hgnc-symbol"] = gene
     return result
+
+
+single_cell_popq = {
+    ":find": ["?sc-id", "?cp-name"],
+    ":in": ["$"],
+    ":where": [
+        ["?sc", ":single-cell/id", "?sc-id"],
+        ["?sc", ":single-cell/cell-populations", "?cp"],
+        ["?cp", ":cell-population/name", "?cp-name"]
+    ]
+}
+
+def single_cell_populations(db_name: str or None = None, **kwargs):
+    qres = pqq.query(single_cell_popq, db_name=db_name, **kwargs)
+    return pd.DataFrame(qres["query_result"], columns=["single-cell-id", "cell-population-name"])
