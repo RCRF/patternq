@@ -1,0 +1,4 @@
+# Environment for the marimo examples. marimo is not a patternq dependency.
+#   uv venv .venv && uv pip install -p .venv -r requirements.txt
+marimo>=0.23.16
+-e ..

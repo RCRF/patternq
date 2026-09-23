@@ -1,2 +1,9 @@
-.ipynb_checkpoints/
-private-analysis/
+.venv/
+__pycache__/
+*.egg-info/
+dist/
+build/
+.pytest_cache/
+examples/_output/
+examples/__marimo__/
+examples/.venv/

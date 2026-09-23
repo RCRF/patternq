@@ -1,0 +1,12 @@
+{
+  "_comment": "Shared patternq plotly theme (all three libraries carry a copy). Categorical order, sequential ramp and diverging pair are the dataviz skill's validated reference palette, unchanged: keep the categorical order (it is the colorblind-safety mechanism); fold series past 8 into Other or facet; scatter-like forms use at most the first 3 slots.",
+  "font": "Helvetica Neue, Arial, sans-serif",
+  "surface": "#fcfcfb",
+  "text_primary": "#0b0b0b",
+  "text_secondary": "#52514e",
+  "grid": "#e8e7e3",
+  "categorical": ["#2a78d6", "#eb6834", "#1baf7a", "#eda100", "#e87ba4", "#008300", "#4a3aa7", "#e34948"],
+  "sequential": ["#cde2fb", "#9ec5f4", "#6da7ec", "#3987e5", "#256abf", "#184f95", "#0d366b"],
+  "diverging": {"low": "#256abf", "mid": "#f0efec", "high": "#e34948"},
+  "status": {"good": "#0ca30c", "warning": "#fab219", "serious": "#ec835a", "critical": "#d03b3b"}
+}

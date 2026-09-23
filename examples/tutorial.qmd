@@ -1,0 +1,209 @@
+---
+title: "patternq tutorial"
+subtitle: "Querying and analyzing the Pattern Data Commons · Python"
+engine: marimo
+external-env: true
+marimo-version: 0.24.2
+width: medium
+---
+
+The basic patternq workflow, step by step. The same steps, with the same
+datasets and outputs, are in `tutorial.qmd` in [patternq-r](https://github.com/RCRF/patternq-r) (R, knitr),
+`tutorial.clj` in [patternq-clj](https://github.com/RCRF/patternq-clj) (Clay) and `tutorial.qmd` in [PatternQ.jl](https://github.com/RCRF/PatternQ.jl) (Julia).
+
+| step | what |
+|---|---|
+| 1 | connect and find a dataset |
+| 2 | explore a dataset: assays, measurement sets, samples, subjects |
+| 3 | write a Datalog query |
+| 4 | canned queries: variants and gene expression |
+| 5 | any measurement, reshaped and joined with sample context |
+| 6 | clinical outcomes and survival |
+| 7 | a sample against a reference cohort |
+| 8 | expression change between two samples |
+
+```python {.marimo}
+#| echo: true
+import marimo as mo
+import patternq as pq
+import patternq.analysis as pqa
+import patternq.context as pqc
+import patternq.dataset as pqd
+import patternq.plots as pqp
+import patternq.survival as pqs
+```
+
+## 1. Connect and find a dataset
+
+Set `PATTERNQ_API_KEY` (and optionally `PATTERNQ_ENDPOINT`) in the environment,
+or call `pq.set_token()` / `pq.set_query_server()`.
+
+```python {.marimo}
+#| echo: true
+datasets = pq.list_datasets()
+mo.vstack([mo.md(f"query server: `{pq.query_server()}`"),
+           datasets[["dataset", "db", "patient_count", "sample_count"]].head()])
+```
+
+Every dataset is its own database. Dataset names are stable; database names
+change when a dataset is re-imported, so resolve them:
+
+```python {.marimo}
+#| echo: true
+h37001 = pq.resolve_db("H37001")
+uvm = pq.resolve_db("tcga-uvm")
+pq.set_db(h37001)
+mo.md(f"`{h37001}` · `{uvm}`")
+```
+
+## 2. Explore a dataset
+
+```python {.marimo}
+#| echo: true
+mo.vstack([
+    pqd.dataset_summary(h37001),
+    pqd.measurement_types("RSEM RNASeq", db=h37001),
+    pqd.samples(h37001),
+    pqd.subjects(h37001),
+])
+```
+
+## 3. Write a Datalog query
+
+Queries are Datomic Datalog in the query service's JSON form: variables are
+`"?x"`, attributes `":ns/name"`, each clause a list.
+
+```python {.marimo}
+#| echo: true
+pq.do_query({":find": ["?sample-id", "?site"],
+             ":where": [["?s", ":sample/id", "?sample-id"],
+                        ["?s", ":sample/freetext-anatomic-site", "?site"]]}, db=h37001)
+```
+
+Inputs bind with `:in` / `args`; a list binds a collection:
+
+```python {.marimo}
+#| echo: true
+vaf_query = {":find": ["?sample-id", "?hgnc", "?vaf"],
+             ":in": [["?hgnc", "..."]],
+             ":where": [["?g", ":gene/hgnc-symbol", "?hgnc"],
+                        ["?v", ":variant/gene", "?g"],
+                        ["?m", ":measurement/variant", "?v"],
+                        ["?m", ":measurement/vaf", "?vaf"],
+                        ["?m", ":measurement/sample", "?s"],
+                        ["?s", ":sample/id", "?sample-id"]]}
+vaf_result = pq.do_query(vaf_query, [["BAP1", "GNAQ", "SF3B1"]], db=h37001)
+vaf_result
+```
+
+Every result records where it came from:
+
+```python {.marimo}
+#| echo: true
+pq.provenance(vaf_result)
+```
+
+## 4. Variants and gene expression
+
+```python {.marimo}
+#| echo: true
+v = pqd.variants(h37001)
+mo.vstack([
+    mo.md(f"{len(v)} variant measurements"),
+    v.loc[v["impact"] == "high", ["sample_id", "hgnc_symbol", "HGVSp", "vaf"]].head(),
+    pqp.plot_vaf_histogram(v, samples=["H37001-001", "H37001-006"]),
+])
+```
+
+```python {.marimo}
+#| echo: true
+gx = pqd.gene_expression(h37001, genes=["BAP1", "GNAQ", "PRAME", "PMEL", "MLANA"], measurement="tpm")
+mo.vstack([gx.head(),
+           pqp.plot_gene_expression(gx, title="Melanocytic genes (TPM)", ylab="TPM", log=True)])
+```
+
+Copy number queries always take a subset (genes, samples or subjects):
+
+```python {.marimo}
+#| echo: true
+pqd.cnv_segments(h37001, genes=["BAP1", "GNAQ"])
+```
+
+## 5. Any measurement, reshaped and joined with context
+
+`measurements()` works for any measurement attribute and detects what each
+measurement is of (gene, cell population, epitope, ...). Here: CyTOF cell
+population frequencies in PRINCE.
+
+```python {.marimo}
+#| echo: true
+prince = pq.resolve_db("prince-2022")
+cy_raw = pqd.measurements("percent-of-parent", "PICI CyTOF Immune Profiling", db=prince)
+mo.vstack([pqd.measurement_types("PICI CyTOF Immune Profiling", db=prince), cy_raw.head()])
+```
+
+Wide (samples x populations):
+
+```python {.marimo}
+#| echo: true
+pqc.to_matrix(cy_raw, col="cell_population").shape
+```
+
+With sample and subject context:
+
+```python {.marimo}
+#| echo: true
+cy = pqc.add_sample_context(cy_raw, db=prince)
+mo.vstack([
+    cy[["sample_id", "subject_id", "timepoint_id", "cell_population", "value"]].head(),
+    pqp.plot_by_timepoint(cy[cy["cell_population"] == "HLA-DR+ Non-Naive CD8 T Cells"],
+                          timepoints=["C1D1", "C1D15", "C2D1", "C4D1"], lines=True,
+                          title="HLA-DR+ non-naive CD8 T cells", ylab="% of parent"),
+])
+```
+
+## 6. Clinical outcomes and survival
+
+```python {.marimo}
+#| echo: true
+outcomes = pqd.subject_outcomes(prince)
+mo.vstack([outcomes.head(),
+           pqp.plot_survival(outcomes, "os", "os_event", group="bor", xlab="months",
+                             title="Overall survival by best overall response")])
+```
+
+Survival split at the median of a baseline biomarker, with a log-rank test:
+
+```python {.marimo}
+#| echo: true
+_base = cy[(cy["cell_population"] == "HLA-DR+ Non-Naive CD8 T Cells") & (cy["timepoint_id"] == "C1D1")]
+_km = pqs.survival_by_median(_base.groupby("subject_id")["value"].mean(), outcomes)
+mo.vstack([mo.md(f"log-rank p = {_km.attrs['logrank']['p']:.3g}"),
+           pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                             title="OS by baseline HLA-DR+ non-naive CD8 T cells")])
+```
+
+## 7. A sample against a reference cohort
+
+Place a patient sample within a reference cohort's distribution, gene by gene
+(z-score and percentile on log2(1 + TPM)). Only compare comparable
+measurements, and check `cohort_observed`.
+
+```python {.marimo}
+#| echo: true
+_genes = ["BAP1", "GNAQ", "PRAME", "MITF", "PMEL", "TYR", "MLANA", "CD8A", "GZMB"]
+_cmp = pqa.compare_to_cohort("H37001-003", db=h37001, cohort_db=uvm, genes=_genes)
+mo.vstack([
+    _cmp[["hgnc_symbol", "value", "z", "percentile", "cohort_observed"]],
+    pqa.examine_geneset(_genes, samples=["H37001-003", "H37001-001"], db=h37001,
+                        cohort_dbs={"TCGA-UVM": uvm}, title="H37001 vs TCGA-UVM"),
+])
+```
+
+## 8. Expression change between two samples
+
+```python {.marimo}
+#| echo: true
+_change = pqa.compare_samples("H37001-003", "H37001-001", db=h37001)
+mo.vstack([_change.head(), pqp.plot_ma(_change)])
+```

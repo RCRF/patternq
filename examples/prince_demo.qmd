@@ -1,0 +1,307 @@
+---
+title: "PRINCE: clinical and immune correlates with patternq"
+subtitle: "prince-2022 on the Pattern Data Commons · Python"
+engine: marimo
+external-env: true
+marimo-version: 0.24.2
+width: medium
+---
+
+This notebook re-creates, on the Pattern Data Commons copy of the PRINCE trial,
+the kinds of analyses in Padron et al., *Nat Med* 2022 (PRINCE: sotigalimab
+and/or nivolumab with gemcitabine/nab-paclitaxel in first-line metastatic
+pancreatic cancer): overall survival, circulating immune populations over
+treatment, survival stratified at the median of a baseline biomarker, marker
+expression on those populations, serum proteins, and tumor gene expression
+signatures.
+
+It is a demonstration of the `patternq` workflow, not a re-analysis.
+
+> **Treatment arm is not in the `prince-2022` database.** The paper stratifies
+> most analyses by arm (nivo/chemo, sotiga/chemo, sotiga/nivo/chemo). Arm is in
+> the source data (`PICI0002_ph2_clinical.csv`, `Arm` / `Actual Arm`) but was
+> not imported, so here every analysis pools patients across arms and groups
+> by survival status at 1 year. P-values are unadjusted and exploratory.
+
+The same notebook exists in R (knitr), Clojure (Clay) and Julia in
+`prince_demo.qmd` in [patternq-r](https://github.com/RCRF/patternq-r), `prince_demo.clj` in [patternq-clj](https://github.com/RCRF/patternq-clj) and
+`prince_demo.qmd` in [PatternQ.jl](https://github.com/RCRF/PatternQ.jl).
+
+```python {.marimo}
+#| echo: true
+import marimo as mo
+import pandas as pd
+import patternq as pq
+import patternq.context as pqc
+import patternq.dataset as pqd
+import patternq.plots as pqp
+import patternq.results as pqres
+import patternq.survival as pqs
+```
+
+## The dataset
+
+Every dataset is its own database. `resolve_db` maps the stable dataset name
+to the current database.
+
+```python {.marimo}
+#| echo: true
+db = pq.resolve_db("prince-2022")
+pq.set_db(db)
+mo.vstack([mo.md(f"`{db}`"), pqd.dataset_summary()])
+```
+
+Which subjects were profiled by which assays:
+
+```python {.marimo}
+#| echo: true
+pqp.plot_sample_overview(pqd.sample_assays())
+```
+
+Samples by timepoint and specimen (blood draws at C1D1, C1D15, C2D1, C4D1;
+tumor biopsies at screening):
+
+```python {.marimo}
+#| echo: true
+_smp = pqd.samples()
+pd.crosstab(_smp["timepoint_id"], _smp["sample_specimen"])
+```
+
+## Outcomes
+
+Best overall response, progression-free and overall survival (months) per
+subject, and survival status at 1 year (the paper's primary endpoint is 1-year
+OS). Subjects censored before 1 year have unknown status.
+
+```python {.marimo}
+#| echo: true
+outcomes = pqd.subject_outcomes()
+outcomes["status_1y"] = pqs.survival_status(outcomes, "os", "os_event", at=12)
+status_levels = ["alive at 1 year", "died within 1 year"]
+mo.hstack([outcomes["status_1y"].value_counts(dropna=False).rename_axis("status_1y").reset_index(),
+           outcomes["bor"].value_counts(dropna=False).rename_axis("bor").reset_index()],
+          justify="start")
+```
+
+Overall survival (Fig. 2a pools arms here) and by best overall response:
+
+```python {.marimo}
+#| echo: true
+mo.vstack([
+    pqp.plot_survival(outcomes, "os", "os_event", title="Overall survival", xlab="months"),
+    pqp.plot_survival(outcomes, "os", "os_event", group="bor",
+                      title="Overall survival by best overall response", xlab="months"),
+])
+```
+
+Progression-free survival (Extended Data Fig. 2a):
+
+```python {.marimo}
+#| echo: true
+pqp.plot_survival(outcomes, "pfs", "pfs_event", title="Progression-free survival", xlab="months")
+```
+
+## Circulating immune populations
+
+Frequencies of gated populations from the X50 (flow) and CyTOF panels, with
+sample context (subject, timepoint) and 1-year survival status joined on.
+
+```python {.marimo}
+#| echo: true
+def with_status(tab):
+    tab = pqc.add_sample_context(tab, include_subjects=False)
+    return pqres.keep_provenance(tab.merge(outcomes[["subject_id", "status_1y"]], on="subject_id"), tab)
+
+x50 = with_status(pqd.measurements("percent-of-parent", "PICI X50 Immune Profiling"))
+cytof = with_status(pd.concat([
+    pqd.measurements("percent-of-parent", "PICI CyTOF Immune Profiling"),
+    pqd.measurements("percent-of-leukocytes", "PICI CyTOF Immune Profiling")], ignore_index=True))
+blood_timepoints = ["C1D1", "C1D15", "C2D1", "C4D1"]
+sorted(x50["cell_population"].unique())
+```
+
+Baseline (C1D1) value per subject for one population:
+
+```{marimo .python name="baseline"}
+def baseline(tab, population, timepoint="C1D1"):
+    b = tab[(tab["cell_population"] == population) & (tab["timepoint_id"] == timepoint)]
+    return b.groupby("subject_id")["value"].mean()
+```
+
+### CD38+ effector memory CD8 T cells (Fig. 3a, c)
+
+OS stratified by the pre-treatment frequency, above vs below the median:
+
+```python {.marimo}
+#| echo: true
+cd38_pop = "CD38+ effector memory CD8+ T cells (% effector memory CD8 T cells)"
+_km = pqs.survival_by_median(baseline(x50, cd38_pop), outcomes)
+mo.vstack([mo.md(f"log-rank p = {_km.attrs['logrank']['p']:.3g}"),
+           pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                             title="OS by baseline CD38+ EM CD8 T cells (median split)")])
+```
+
+Frequencies before and on treatment, grouped by 1-year survival, with each
+patient's trajectory:
+
+```python {.marimo}
+#| echo: true
+pqp.plot_by_timepoint(x50[x50["cell_population"] == cd38_pop], group="status_1y", lines=True,
+                      timepoints=blood_timepoints, levels=status_levels,
+                      title="CD38+ EM CD8 T cells over treatment", ylab="% of EM CD8 T cells")
+```
+
+### PD-1+CD39+ EM1 CD4 T cells (Fig. 3d) and PD-1+Tbet+ non-naive CD4 T cells (Fig. 4f, h)
+
+```python {.marimo}
+#| echo: true
+_pops = ["PD-1+CD39+ effector memory 1 CD4+ T cells (% of effector memory 1 CD4 T cells)",
+         "PD-1+Tbet+ non-Naive CD4+ T cells (% of CD4 not naive T cells)"]
+_plots = []
+for _pop in _pops:
+    _km = pqs.survival_by_median(baseline(x50, _pop), outcomes)
+    _plots.append(pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                                    title="OS by baseline " + _pop.split(" (")[0]))
+mo.vstack(_plots)
+```
+
+### Cross-presenting dendritic cells (Fig. 4b)
+
+```python {.marimo}
+#| echo: true
+_km = pqs.survival_by_median(baseline(cytof, "CD1C+ CD141+ DC (% of leukocytes)"), outcomes)
+pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                  title="OS by baseline CD1c+ CD141+ DCs (CyTOF)")
+```
+
+### Proliferating T cells over treatment (Extended Data Fig. 3a)
+
+Change relative to C1D1 (log2 fold change of the frequency):
+
+```python {.marimo}
+#| echo: true
+_ki67 = pqs.change_from_baseline(x50[x50["cell_population"] == "Ki67+ Non-Naive CD8 T Cells"],
+                                 baseline="C1D1", method="log2_ratio", pseudocount=0.001)
+pqp.plot_by_timepoint(_ki67, value="change", group="status_1y", lines=True,
+                      timepoints=blood_timepoints, levels=status_levels,
+                      title="Ki-67+ non-naive CD8 T cells, change from C1D1",
+                      ylab="log2 fold change vs C1D1")
+```
+
+### Screening all baseline populations
+
+Every X50 and CyTOF population at C1D1, median split, log-rank p (the paper's
+Fig. 5 summarizes such associations per arm):
+
+```python {.marimo}
+#| echo: true
+def screen(tab, panel):
+    rows = []
+    for pop in tab["cell_population"].unique():
+        km = pqs.survival_by_median(baseline(tab, pop), outcomes)
+        lr = km.attrs["logrank"]
+        if not lr.get("observed"):
+            continue  # no baseline values for this population
+        hr = {g: lr["observed"][g] / lr["expected"][g] for g in lr["observed"]}
+        rows.append({"panel": panel, "cell_population": pop, "n": len(km), "p": lr["p"],
+                     "higher_is": "longer survival" if hr.get("high", 1) < hr.get("low", 1)
+                     else "shorter survival"})
+    return pd.DataFrame(rows)
+
+assoc = pd.concat([screen(x50, "X50"), screen(cytof, "CyTOF")], ignore_index=True)
+assoc = assoc.sort_values("p").reset_index(drop=True)
+mo.ui.table(assoc.head(12).round({"p": 3}), page_size=12, selection=None)
+```
+
+## Marker expression on populations (Extended Data Figs. 7b, 8b)
+
+Median channel values of markers on CD38+ non-naive CD8 T cells, pre-treatment,
+per patient, z-scored per marker, patients annotated by 1-year survival:
+
+```python {.marimo}
+#| echo: true
+_mcv = with_status(pqd.measurements("median-channel-value", "PICI X50 Immune Profiling"))
+_cd8 = _mcv[(_mcv["cell_population"] == "CD38+ non-naive CD8+ T cells (% non-naive CD8 T cells)")
+            & (_mcv["timepoint_id"] == "C1D1")]
+status = dict(zip(outcomes["subject_id"], outcomes["status_1y"]))
+pqp.plot_heatmap(pqc.to_matrix(_cd8, row="epitope_id", col="subject_id"), scale="row", col_groups=status,
+                 title="Markers on CD38+ non-naive CD8 T cells (C1D1, z-scored MFI)")
+```
+
+CCR7+ CD11b+ CD27- B cells (CyTOF) on treatment (C1D15):
+
+```python {.marimo}
+#| echo: true
+_mcv_b = with_status(pqd.measurements("median-channel-value", "PICI CyTOF Immune Profiling"))
+_b = _mcv_b[_mcv_b["timepoint_id"] == "C1D15"]
+pqp.plot_heatmap(pqc.to_matrix(_b, row="epitope_id", col="subject_id"), scale="row", col_groups=status,
+                 title="Markers on CCR7+ CD11b+ CD27- B cells (C1D15, z-scored MFI)")
+```
+
+## Serum proteins (Extended Data Fig. 3c–f)
+
+Olink NPX is on a log2 scale, so change from C1D1 is a difference:
+
+```python {.marimo}
+#| echo: true
+_olink = with_status(pqd.measurements("olink-npx", "PICI Olink Proteomics"))
+_change = pqs.change_from_baseline(_olink, baseline="C1D1", method="difference")
+_proteins = {"IFNG": "IFNG", "PD-1": "PDCD1", "CXCL9": "CXCL9", "CXCL10": "CXL10"}  # label: Olink id
+mo.vstack([pqp.plot_by_timepoint(_change[_change["epitope_id"] == _id], value="change", group="status_1y",
+                                 timepoints=blood_timepoints, levels=status_levels,
+                                 title=f"{_label} change from C1D1", ylab="log2 NPX change")
+           for _label, _id in _proteins.items()])
+```
+
+## Tumor: gene expression signatures and multiplex IF
+
+Pre-treatment tumor RNA-seq signature scores, clustered, patients annotated by
+1-year survival (Extended Data Figs. 4a, 6a). The RNA-seq data comes from the
+cBioPortal / iAtlas release, which labels the pre-treatment timepoint `0`
+(the PICI modalities use `screening` / `C1D1`):
+
+```python {.marimo}
+#| echo: true
+_sig = with_status(pqd.measurements("nanostring-signature-score", "cBioPortal Gene Expression Signatures"))
+sig_pre = _sig[_sig["timepoint_id"].astype(str).isin(["screening", "0"])]
+pqp.plot_heatmap(pqc.to_matrix(sig_pre, row="signature", col="subject_id"), scale="row", col_groups=status,
+                 title="Tumor gene expression signatures (pre-treatment, z-scored)")
+```
+
+OS by the Th1 signature (Extended Data Fig. 6b):
+
+```python {.marimo}
+#| echo: true
+_th1 = sig_pre[sig_pre["signature"] == "Bindea_Th1_Cells"]
+_km = pqs.survival_by_median(_th1.groupby("subject_id")["value"].mean(), outcomes)
+pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                  title="OS by tumor Th1 signature (median split)")
+```
+
+OS by intratumoral iNOS+ macrophages from multiplex IF (Extended Data Fig. 4c):
+
+```python {.marimo}
+#| echo: true
+_vectra = with_status(pqd.measurements("percent-of-total-cells", "PICI Vectra Multiplex IF"))
+_inos = _vectra[(_vectra["cell_population"] == "iNOS+ macrophages (% of total cells)")
+                & (_vectra["timepoint_id"] == "screening")]
+_km = pqs.survival_by_median(_inos.groupby("subject_id")["value"].mean(), outcomes)
+pqp.plot_survival(_km, group="group", levels=["low", "high"], xlab="months",
+                  title="OS by tumor iNOS+ macrophages (median split)")
+```
+
+## Tumor mutations
+
+```python {.marimo}
+#| echo: true
+pqp.plot_mutation_landscape(pqd.variants(), n_genes=20, title="PRINCE mutation landscape (top 20 genes)")
+```
+
+## Provenance
+
+Every result records the database and the database basis t it was read at:
+
+```python {.marimo}
+#| echo: true
+pq.provenance(x50)
+```

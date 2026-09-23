@@ -1,39 +1,29 @@
-[tool.poetry]
+[project]
 name = "patternq"
-version = "0.2.1"
-description = "A library for querying the Pattern.org data commons and its UnifyBio components."
-authors = ["Benjamin Kamphaus <ben@vendekagonlabs.com>"]
+version = "0.3.0"
+description = "Query and analysis tools for the Pattern Data Commons and its UnifyBio components."
+authors = [{ name = "Benjamin Kamphaus", email = "ben@vendekagonlabs.com" }]
 readme = "README.md"
+license = { text = "Apache-2.0" }
+requires-python = ">=3.9"
+dependencies = [
+    "requests>=2.26.0",
+    "pandas>=2.0.1",
+    "plotly>=5.0",
+]
 
-# tool.poetry.dependencies contains just the package dependencies,
-# broadly versioned in a way that reflects tested coverage of
-# multiple python and dependency versions.
-[tool.poetry.dependencies]
-python = ">=3.9"
-requests = ">=2.26.0"
-pandas = ">=2.0.1"
-
-# the main test dependency group only specifies the relevant pytest
-# package.
-[tool.poetry.group.test.dependencies]
-pytest = "^8.3.3"
-
-# dev dependencies should always be a superset of the standard
-# test dependencies, adding in interactive dev supporting packages.
-[tool.poetry.group.dev.dependencies]
-ipython = "^8.18.1"
-pytest = "^8.3.3"
-
-# tutorial dev dependencies are narrowly pegged and opinionated, supporting
-# docs / notebook tutorials for using the patternq package.
-[tool.poetry.group.tutorial.dependencies]
-python = "^3.12"
-jupyter = "^1.1.1"
+[project.optional-dependencies]
+test = ["pytest>=8"]
 
 [build-system]
-requires = ["poetry-core"]
-build-backend = "poetry.core.masonry.api"
+requires = ["hatchling"]
+build-backend = "hatchling.build"
 
-[virtualenvs]
-create = true
-in-project = true
+[tool.hatch.build.targets.wheel]
+packages = ["patternq"]
+
+[tool.pytest.ini_options]
+markers = [
+    "live: queries the live query service (needs PATTERNQ_API_KEY)",
+    "slow: large datasets (tcga-brca, painter); opt in with -m slow",
+]
