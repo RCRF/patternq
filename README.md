@@ -130,6 +130,28 @@ result carries provenance (`pq.provenance(df)`: database, basis t, time).
 Results are cached by the service (S3) by default; `cache=False` returns
 results inline without the cache and `refresh_cache=True` recomputes.
 
+### Advanced: transit responses
+
+Direct queries can also come back as transit: pass `format="transit+json"`
+or `format="transit+msgpack"` to any query function (it is passed through to
+`patternq.query.query`). This needs the optional transit-python package:
+`pip install "patternq[transit] @ git+ssh://git@github.com/RCRF/patternq.git"`
+(Python 3.10+), or `pip install 'transit-python[msgpack]'` next to an
+existing install. In Python, transit decodes
+about as fast as JSON for tabular results and slower for pull-heavy ones.
+
+The transit formats always skip the S3 result cache. Results are the same as
+with JSON, with two exceptions:
+
+- with `transit+msgpack`, 32-bit float attributes (such as TPM) arrive at
+  their exact stored value instead of the shortest decimal (0.045499999076
+  rather than 0.0455);
+- pulled attributes may come back in a different column order.
+
+Query time on the service usually dominates. Transit responses are not
+gzip-compressed, so they are 4–5× larger on the wire than JSON; on a slow
+connection JSON can still be faster. JSON stays the default.
+
 ## Tests
 
 ```

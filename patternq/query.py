@@ -11,7 +11,9 @@ The implicit database "$" is prepended to ":in" if absent.
 
 Endpoints (bearer API token):
   POST /query/<db>   Accept text/plain -> presigned URL of the gzipped, S3-cached
-                     result; Accept application/json -> inline JSON, cache skipped
+                     result; Accept application/json -> inline JSON, cache skipped;
+                     Accept application/transit+json / +msgpack -> inline transit,
+                     cache skipped (optional, see patternq.transit)
   POST /datoms/<db>  -> {"datoms_chunk": [...], "basis_t": ...}
   POST /matrix/<db>/<key> -> presigned URL of a gzipped TSV matrix
   GET  /api-v1/list/datasets
@@ -27,6 +29,7 @@ import requests
 
 from patternq import config
 from patternq import results as pqres
+from patternq import transit as pqtransit
 
 Query = Dict[str, Any]
 
@@ -87,7 +90,7 @@ def query_body(q: Query, args: Optional[List[Any]] = None, timeout: int = 30,
 def query(q: Query, args: Optional[List[Any]] = None, db: Optional[str] = None,
           timeout: int = 30, cache: bool = True, refresh_cache: bool = False,
           session: Optional[requests.Session] = None, db_name: Optional[str] = None,
-          print_json: bool = False) -> Dict[str, Any]:
+          print_json: bool = False, format: str = "json") -> Dict[str, Any]:
     """Run a query and return the parsed response: a dict with "query_result",
     "basis_t" and "db_name". Most users want do_query(), which returns a DataFrame.
 
@@ -97,18 +100,34 @@ def query(q: Query, args: Optional[List[Any]] = None, db: Optional[str] = None,
     refresh_cache: recompute and overwrite the cached result.
     session: a requests.Session, to reuse connections across many queries.
     db_name: deprecated alias for db.
+    format: response format, "json" (default), "transit+json" or
+      "transit+msgpack". The transit formats are always direct (they skip the
+      S3 cache, whatever cache says) and need the optional transit-python
+      package (pip install 'transit-python[msgpack]'). Results are the same as with
+      JSON, except that with "transit+msgpack" 32-bit float attributes (e.g.
+      TPM) arrive at their exact stored value instead of the shortest decimal
+      (0.045499999076 rather than 0.0455), and pulled attributes may come in
+      a different column order. Which format is faster depends on the query
+      and the network. Any function that takes **kwargs passes it through.
     """
     db = config.ensure_db(db or db_name)
     http = session or requests
     body = query_body(q, args=args, timeout=timeout, refresh_cache=refresh_cache)
     if print_json:
         print(json.dumps(body))
-    accept = "text/plain" if cache else "application/json"
+    transit = format != "json"
+    accept = pqtransit.accept(format) if transit else ("text/plain" if cache else "application/json")
     resp = http.post(f"{config.query_server()}/query/{db}",
                      data=json.dumps(body),
                      headers={**_headers(accept), "Content-Type": "application/json"},
                      timeout=timeout + 30)
     _raise_for(resp, "Query")
+    if transit and resp.headers.get("Content-Type", "").startswith("application/transit"):
+        res = pqtransit.decode(resp.content, format)
+        if res.get("error"):
+            raise RuntimeError(f"Query error: {res['error']}")
+        res["db_name"] = db
+        return res
     payload = resp.text.strip()
     if payload.startswith("{"):
         res = json.loads(payload)
