@@ -13,6 +13,7 @@ Configure access with PATTERNQ_ENDPOINT / PATTERNQ_API_KEY, or set_query_server(
 / set_token(). Every dataset is its own database: select one with set_db() or
 pass db= to query functions.
 """
+from patternq.backpressure import ThrottledError, retry_policy, set_retry_policy
 from patternq.config import (current_db, query_server, set_db, set_query_server,
                              set_token)
 # note: the query() function is not re-exported here, so that patternq.query
@@ -22,5 +23,6 @@ from patternq.query import (across_dbs, datoms, do_query, list_datasets,
 from patternq.results import provenance
 
 __all__ = ["current_db", "query_server", "set_db", "set_query_server", "set_token",
+           "set_retry_policy", "retry_policy", "ThrottledError",
            "across_dbs", "datoms", "do_query", "list_datasets", "measurement_matrix",
            "resolve_db", "provenance"]

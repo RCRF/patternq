@@ -6,7 +6,9 @@ from patternq import dataset as pqd
 from patternq import query as pqq
 from patternq import transit as pqt
 
-transit = pytest.importorskip("transit.writer")
+# The transit formats are optional for users but always tested: a missing
+# transit-python fails here instead of skipping (pip install -e ".[test]").
+import transit.writer as transit
 
 
 def roundtrip(value, fmt):

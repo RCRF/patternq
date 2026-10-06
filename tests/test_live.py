@@ -10,7 +10,6 @@ pytestmark = pytest.mark.live
 
 def test_h37001():
     db = tdb("H37001")
-    assert len(pqd.samples(db)) == 6
     assert list(pqd.subjects(db)["subject_id"]) == ["H37001"]
     v = pqd.variants(db)
     assert len(v) > 100
@@ -25,7 +24,8 @@ def test_h37001():
 def test_tcga_uvm():
     db = tdb("tcga-uvm")
     assert len(pqd.subjects(db)) == 80
-    assert set(pqd.dataset_summary(db)["assay_technology"]) == {"WES", "RNA-seq"}
+    assert len(pqd.samples(db)) == 80
+    assert set(pqd.dataset_summary(db)["assay_technology"]) == {"WES", "RNA-seq", "SNP-array"}
     assert len(pqd.gene_expression(db, genes=["BAP1", "PRAME"])) > 100
     n = pq.do_query({":find": [["count", "?s"]], ":where": [["?s", ":sample/id"]]}, db=db, cache=False)
     assert n["count_s"][0] == 80

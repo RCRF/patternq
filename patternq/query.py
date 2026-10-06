@@ -22,11 +22,13 @@ import copy
 import gzip
 import io
 import json
+import warnings
 from typing import Any, Dict, Iterable, List, Optional
 
 import pandas as pd
 import requests
 
+from patternq import backpressure as bp
 from patternq import config
 from patternq import results as pqres
 from patternq import transit as pqtransit
@@ -44,12 +46,18 @@ def _raise_for(resp: requests.Response, what: str):
     if resp.status_code == 200:
         return
     msg = resp.text
+    timed_out = False
     try:
         parsed = resp.json()
         if isinstance(parsed, dict) and parsed.get("error"):
             msg = parsed["error"]
+            timed_out = parsed.get("timeout") is True
     except ValueError:
         pass
+    if timed_out:
+        raise RuntimeError(
+            f"{what} timed out on the server: {msg}. Narrow the query or page it (e.g. fewer "
+            f"args per call); the server caps query timeouts at {bp.max_timeout_ms() // 1000} s.")
     if resp.status_code == 401:
         msg = "not authorized; check PATTERNQ_API_KEY / set_token(). " + msg
     if resp.status_code == 403:
@@ -115,12 +123,16 @@ def query(q: Query, args: Optional[List[Any]] = None, db: Optional[str] = None,
     body = query_body(q, args=args, timeout=timeout, refresh_cache=refresh_cache)
     if print_json:
         print(json.dumps(body))
+    if body["timeout"] > bp.max_timeout_ms():
+        warnings.warn(f"timeout={timeout} s is above the server's cap of {bp.max_timeout_ms() // 1000} s; "
+                      "the query will be canceled at the cap", stacklevel=2)
     transit = format != "json"
     accept = pqtransit.accept(format) if transit else ("text/plain" if cache else "application/json")
-    resp = http.post(f"{config.query_server()}/query/{db}",
-                     data=json.dumps(body),
-                     headers={**_headers(accept), "Content-Type": "application/json"},
-                     timeout=timeout + 30)
+    resp = bp.send(lambda: http.post(f"{config.query_server()}/query/{db}",
+                                     data=json.dumps(body),
+                                     headers={**_headers(accept), "Content-Type": "application/json"},
+                                     timeout=timeout + 30),
+                   "Query", limited=True)
     _raise_for(resp, "Query")
     if transit and resp.headers.get("Content-Type", "").startswith("application/transit"):
         res = pqtransit.decode(resp.content, format)
@@ -220,9 +232,11 @@ def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str]
     http = session or requests
     body = {"index": ":" + index.lstrip(":"), "components": components or [],
             "offset": offset, "limit": limit}
-    resp = http.post(f"{config.query_server()}/datoms/{db}", data=json.dumps(body),
-                     headers={**_headers("application/json"), "Content-Type": "application/json"},
-                     timeout=timeout + 2)
+    resp = bp.send(lambda: http.post(f"{config.query_server()}/datoms/{db}", data=json.dumps(body),
+                                     headers={**_headers("application/json"),
+                                              "Content-Type": "application/json"},
+                                     timeout=timeout + 2),
+                   "Datoms request", limited=True)
     _raise_for(resp, "Datoms request")
     res = resp.json()
     rows = [{k.lstrip(":"): v for k, v in d.items()} for d in res.get("datoms_chunk", [])]
@@ -233,8 +247,9 @@ def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str]
 def list_datasets() -> pd.DataFrame:
     """Datasets available to your API key: dataset, db (current database name),
     patient_count, sample_count, assays, tags."""
-    resp = requests.get(f"{config.query_server()}/api-v1/list/datasets",
-                        headers=_headers("application/json"), timeout=60)
+    resp = bp.send(lambda: requests.get(f"{config.query_server()}/api-v1/list/datasets",
+                                        headers=_headers("application/json"), timeout=60),
+                   "Listing datasets")
     _raise_for(resp, "Listing datasets")
     rows = []
     for d in resp.json().get("datasets", []):
@@ -266,9 +281,11 @@ def measurement_matrix(matrix_key: str, db: Optional[str] = None,
     """Download a measurement matrix (e.g. single-cell counts) by its backing-file
     key; find keys with dataset.measurement_matrices()."""
     db = config.ensure_db(db or db_name)
-    resp = requests.post(f"{config.query_server()}/matrix/{db}/{matrix_key}", data="{}",
-                         headers={**_headers("text/plain"), "Content-Type": "application/json"},
-                         timeout=120)
+    resp = bp.send(lambda: requests.post(f"{config.query_server()}/matrix/{db}/{matrix_key}", data="{}",
+                                         headers={**_headers("text/plain"),
+                                                  "Content-Type": "application/json"},
+                                         timeout=120),
+                   "Matrix request")
     _raise_for(resp, "Matrix request")
     content = _fetch_presigned(resp.text)
     return pd.read_csv(io.BytesIO(content), sep="\t", header=0)

@@ -130,6 +130,16 @@ result carries provenance (`pq.provenance(df)`: database, basis t, time).
 Results are cached by the service (S3) by default; `cache=False` returns
 results inline without the cache and `refresh_cache=True` recomputes.
 
+### Rate limits and retries
+
+The commons API rate-limits each API key (600 requests a minute, at most 4 queries at once). When it throttles a call (HTTP 429 or 503), patternq waits as the server asks and retries, up to 5 times, and it waits out the rate limit instead of spending requests on refusals. Retries are logged at INFO on the `patternq` logger, and a call still throttled after the
+last retry raises `pq.ThrottledError`. A query that times out on the server is not retried: narrow it or
+page it (the server caps query timeouts at 120 s). Threads share a limit of 4 concurrent queries.
+
+```python
+pq.set_retry_policy(max_retries=8, max_backoff=30, max_concurrency=4)   # defaults: 5, 60 s, 4
+```
+
 ### Advanced: transit responses
 
 Direct queries can also come back as transit: pass `format="transit+json"`
@@ -159,7 +169,8 @@ uv venv .venv && uv pip install -p .venv -e '.[test]'
 .venv/bin/pytest tests            # live tests run when PATTERNQ_API_KEY is set
 ```
 
-Live tests use the H37001, H37004, tcga-uvm, prince-2022 and painter-2025
+The `test` extra includes transit-python: the transit formats are optional for users but always
+tested. Live tests use the H37001, H37004, tcga-uvm, prince-2022 and painter-2025
 datasets. All access is read-only.
 
 ## Examples
