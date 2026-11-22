@@ -88,7 +88,8 @@ patternq handles HTTP 429 and 503 itself: it honors Retry-After, retries up
 to 5 times, and caps concurrent queries at 4. Don't add your own retry loop.
 `pq.ThrottledError` means the limit outlasted the retries, so slow down.
 A server-side query timeout isn't retried; narrow or page the query instead
-(the server caps timeouts at 120 s). Prefer a few broad catalog calls over
+(a query running past about 60 s fails
+at the load balancer). Prefer a few broad catalog calls over
 many tiny ones.
 
 ## More for agents

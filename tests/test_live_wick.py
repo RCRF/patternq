@@ -51,7 +51,7 @@ def test_h37004_cnv_isoforms_interventions():
     iso = pqd.isoforms("TP53", db=db)
     assert {"transcript_id", "isoform_percent"} <= set(iso.columns)
     assert len(pqd.clinical_interventions(db)) > 0
-    assert len(pqd.measurement_matrices(db)) == 2
+    assert len(pqd.measurement_matrices(db)) == 6
 
 
 def test_painter_gene_cnv_calls():

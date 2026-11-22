@@ -9,8 +9,11 @@ Mirrors the R library (R/patternq/R/queries_*.R); see PARITY.md.
 """
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
+from concurrent.futures import ThreadPoolExecutor
+
 import pandas as pd
 
+from patternq import backpressure as bp
 from patternq import config
 from patternq import query as pqq
 from patternq import results as pqres
@@ -29,6 +32,34 @@ def _mattr(measurement: str) -> str:
 
 def _run(q: QueryAndArgs, db, **kwargs) -> pd.DataFrame:
     return pqq.do_query(q[0], q[1], db=db, **kwargs)
+
+
+# Starting from a few samples walks only their measurements. A subject can
+# own most of a dataset (a single-participant deep dive has one subject and
+# every sample), so subject-only queries start from the measurement attribute
+# instead.
+_SAMPLE_LEAD = [["?s", ":sample/id", "?sample-id"], ["?m", ":measurement/sample", "?s"]]
+
+
+def _lead_with(where: List[Any], lead: List[Any]) -> List[Any]:
+    """`where` reordered to start from `lead`, the clauses of the subset the
+    caller bound (genes, samples, subjects), then each remaining clause as soon
+    as it shares a variable with those already placed. Datomic joins in clause
+    order, so this keeps a query from starting on a whole attribute (every
+    variant, CNV, or expression measurement) and filtering at the end."""
+    def vars_of(c):
+        return {x for x in c if isinstance(x, str) and x.startswith("?")}
+    out = [c for c in lead]
+    bound = set().union(*map(vars_of, out)) if out else set()
+    rest = [c for c in where if c not in lead]
+    while rest:
+        i = next((k for k, c in enumerate(rest) if vars_of(c) & bound), 0)
+        c = rest.pop(i)
+        out.append(c)
+        bound |= vars_of(c)
+    return out
+
+
 
 
 # -- samples & subjects --------------------------------------------------------
@@ -91,57 +122,155 @@ def dataset_summary(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
     return pqres.keep_provenance(out, df)
 
 
-def measurement_sets(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
-    """dataset_summary plus measurement_count per measurement set."""
+# A query that binds every measurement of a set (count, sample, [?m ?a]) makes
+# the server hold the whole set in memory before any aggregate runs; on large
+# expression sets that runs the service out of heap. The calls below read the
+# set's measurement ids from the datoms index instead, in bounded pages, and
+# query only those ids.
+_PAGE = 10000  # the server's datoms page cap; each page is also an audit write
+
+
+def _measurement_set_eids(measurement_set: str, db: str, **kwargs) -> List[int]:
+    r = pqq.do_query({":find": ["?ms"], ":in": ["?ms-name"],
+                      ":where": [["?ms", ":measurement-set/name", "?ms-name"]]},
+                     [measurement_set], db=db, **kwargs)
+    if not len(r):
+        raise ValueError(f"No measurement set named {measurement_set!r} in {db}")
+    return [int(e) for e in r["ms"]]
+
+
+def _set_measurement_ids(ms: int, db: str, limit: int, offset: int = 0) -> Tuple[List[int], bool]:
+    """Up to `limit` measurement ids of set `ms` in index order, starting at
+    `offset`, and whether they reach the end of the set."""
+    ids: List[int] = []
+    while len(ids) < limit:
+        want = min(_PAGE, limit - len(ids))
+        page = pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db,
+                          offset=offset + len(ids), limit=want)
+        ids += [int(v) for v in page["v"]]
+        if len(page) < want:
+            return ids, True
+    return ids, not len(pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db,
+                                   offset=offset + len(ids), limit=1))
+
+
+def _count_set_measurements(ms: int, db: str, cap: int) -> Tuple[int, bool]:
+    """(count, exact): the set's measurement count when it is at most `cap`,
+    else (cap, False). One page for a small set. A set filling the first page
+    gets one probe past the cap, then one-datom probes binary-search the
+    10000-wide block it ends in, and one page of that block finishes the count:
+    about six round trips for any size, instead of a page per 10000."""
+    def page(offset, limit):
+        return len(pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db, offset=offset, limit=limit))
+    step = 10000
+    n = page(0, step)
+    if n < step:
+        return n, True
+    if page(cap, 1):
+        return cap, False
+    lo, hi = 1, -(-cap // step)  # a datom at lo * step; none at hi * step (or past the cap)
+    while hi - lo > 1:
+        mid = (lo + hi) // 2
+        if page(mid * step, 1):
+            lo = mid
+        else:
+            hi = mid
+    return lo * step + page(lo * step, step), True
+
+
+def measurement_sets(db: Optional[str] = None, count_cap: int = 100000, **kwargs) -> pd.DataFrame:
+    """dataset_summary plus measurement_count per measurement set, and
+    measurement_count_exact: False when the set has more than count_cap
+    measurements, in which case measurement_count is count_cap (read it as
+    "at least"). Counting never binds a whole set in one query."""
+    db = config.ensure_db(db)
     df = dataset_summary(db, **kwargs)
-    counts = pqq.do_query({":find": ["?measurement-set-name", ["count", "?m"]],
-                           ":where": [["?ms", ":measurement-set/name", "?measurement-set-name"],
-                                      ["?ms", ":measurement-set/measurements", "?m"]]},
-                          db=db, **kwargs)
-    n = dict(zip(counts["measurement_set_name"], counts["count_m"]))
-    df["measurement_count"] = df["measurement_set_name"].map(n).fillna(0).astype(int)
+    sets = pqq.do_query({":find": ["?ms", "?measurement-set-name"],
+                         ":where": [["?a", ":assay/measurement-sets", "?ms"],
+                                    ["?ms", ":measurement-set/name", "?measurement-set-name"]]},
+                        db=db, **kwargs)
+    counts: Dict[str, Tuple[int, bool]] = {}
+    # one or two round trips per set, and a dataset can have dozens of sets:
+    # count them concurrently (the back pressure still caps requests in flight)
+    with ThreadPoolExecutor(bp.retry_policy()["max_concurrency"]) as pool:
+        found = list(pool.map(lambda e: _count_set_measurements(e, db, count_cap),
+                              [int(e) for e in sets["ms"]]))
+    for (_, row), (n, exact) in zip(sets.iterrows(), found):
+        prev = counts.get(row["measurement_set_name"], (0, True))
+        counts[row["measurement_set_name"]] = (prev[0] + n, prev[1] and exact)
+    df["measurement_count"] = df["measurement_set_name"].map(lambda s: counts.get(s, (0, True))[0]).astype(int)
+    df["measurement_count_exact"] = df["measurement_set_name"].map(lambda s: counts.get(s, (0, True))[1])
     return df
 
 
-def measurement_types(measurement_set: str, db: Optional[str] = None, **kwargs) -> pd.DataFrame:
+def measurement_types(measurement_set: str, db: Optional[str] = None, limit: int = 20000,
+                      **kwargs) -> pd.DataFrame:
     """Count every attribute across a measurement set's measurements: value
     attributes (tpm, percent-of-parent, ...) and target references
     (gene-product, cell-population, ...). A set can mix several kinds, e.g.
     CyTOF populations with percent-of-parent alongside population x marker
-    median-channel-value. Columns: attribute, kind ("value"/"target"), count."""
-    kwargs.setdefault("timeout", 120)
-    r = pqq.do_query({":find": ["?attribute", ["count", "?m"]],
-                      ":in": ["?ms-name"],
-                      ":where": [["?ms", ":measurement-set/name", "?ms-name"],
-                                 ["?ms", ":measurement-set/measurements", "?m"],
-                                 ["?m", "?a"], ["?a", ":db/ident", "?attribute"]]},
-                     [measurement_set], db=db, **kwargs)
+    median-channel-value. Columns: attribute, kind ("value"/"target"), count.
+
+    Counts cover the set's first `limit` measurements in index order; the
+    result's attrs["exact"] is False when the set is larger than that, and the
+    counts are then a sample (kinds laid out after the first `limit` can be
+    missed). Raise `limit` for exact counts on a bigger set."""
+    db = config.ensure_db(db)
+    parts, exact = [], True
+    for ms in _measurement_set_eids(measurement_set, db, **kwargs):
+        ids, complete = _set_measurement_ids(ms, db, limit)
+        exact = exact and complete
+        for i in range(0, len(ids), _PAGE):
+            r = pqq.do_query({":find": ["?attribute", ["count", "?m"]], ":in": [["?m", "..."]],
+                              ":where": [["?m", "?a"], ["?a", ":db/ident", "?attribute"]]},
+                             [ids[i:i + _PAGE]], db=db, **kwargs)
+            if len(r):
+                parts.append(r)
+    if not parts:
+        out = pd.DataFrame(columns=["attribute", "kind", "count"])
+        out.attrs["exact"] = exact
+        return out
+    r = pd.concat(parts, ignore_index=True).groupby("attribute", as_index=False)["count_m"].sum()
     r = r[~r["attribute"].isin([":measurement/id", ":measurement/uid", ":measurement/sample"])]
     r = r.rename(columns={"count_m": "count"})
     r["kind"] = r["attribute"].map(lambda a: "target" if a in MEASUREMENT_TARGETS else "value")
     r["attribute"] = r["attribute"].str.replace(":measurement/", "", regex=False)
     out = r.sort_values(["kind", "count"], ascending=[True, False])[["attribute", "kind", "count"]]
-    return pqres.keep_provenance(out.reset_index(drop=True), r)
+    out = pqres.keep_provenance(out.reset_index(drop=True), parts[0])
+    out.attrs["exact"] = exact
+    return out
 
 
 def measurement_set_attributes(measurement_set: str, db: Optional[str] = None,
                                measurement: Optional[str] = None, n: int = 200) -> List[str]:
-    """Attributes of a random sample of n measurements of a set (optionally only
-    those carrying `measurement`); cheap even for sets with millions of
+    """Attributes of the set's first n measurements in index order (optionally
+    only those carrying `measurement`, looked for among the set's first 100000
+    measurements, the deepest the server pages by offset). Reads bounded pages
+    of the datoms index, so it stays cheap for sets with millions of
     measurements."""
     db = config.ensure_db(db)
-    where = [["?ms", ":measurement-set/name", "?ms-name"],
-             ["?ms", ":measurement-set/measurements", "?m"]]
-    if measurement:
-        where.append(["?m", _mattr(measurement)])
-    s = pqq.query({":find": [["sample", int(n), "?m"]], ":in": ["?ms-name"], ":where": where},
-                  [measurement_set], db=db, timeout=120)
-    eids = [e for row in s["query_result"] for e in row[0]] if s["query_result"] else []
-    if not eids:
+    attr = _mattr(measurement) if measurement else None
+    found: List[int] = []
+    for ms in _measurement_set_eids(measurement_set, db):
+        offset = 0
+        for _ in range(10):  # the server caps datoms offsets at 100000
+            ids, complete = _set_measurement_ids(ms, db, _PAGE if attr else n, offset)
+            offset += len(ids)
+            if attr and ids:
+                r = pqq.do_query({":find": ["?m"], ":in": [["?m", "..."]], ":where": [["?m", attr]]},
+                                 [ids], db=db)
+                ids = [int(m) for m in r["m"]] if len(r) else []
+            found += ids
+            if len(found) >= n or complete or not attr:
+                break
+        if len(found) >= n:
+            break
+    found = found[:n]
+    if not found:
         return []
     attrs = pqq.do_query({":find": ["?attr"], ":in": [["?m", "..."]],
                           ":where": [["?m", "?a"], ["?a", ":db/ident", "?attr"]]},
-                         [eids], db=db)
+                         [found], db=db)
     return sorted(set(attrs["attr"]) - {":measurement/uid", ":measurement/id"})
 
 
@@ -229,11 +358,44 @@ def measurements(measurement: str, measurement_set: Optional[str] = None, db: Op
     return df
 
 
+def sample_assays_query() -> QueryAndArgs:
+    """Samples x measurement sets from :measurement-set/includes-samples, the
+    enrichment that lists each set's samples (schema 0.3.18), so nothing walks
+    the measurements."""
+    q = {":find": ["?sample-id", "?assay-name", "?assay-technology", "?measurement-set-name"],
+         ":where": [["?a", ":assay/name", "?assay-name"],
+                    ["?a", ":assay/technology", "?t"],
+                    ["?t", ":db/ident", "?assay-technology"],
+                    ["?a", ":assay/measurement-sets", "?ms"],
+                    ["?ms", ":measurement-set/name", "?measurement-set-name"],
+                    ["?ms", ":measurement-set/includes-samples", "?s"],
+                    ["?s", ":sample/id", "?sample-id"]]}
+    return q, []
+
+
+def _has_includes_samples(db: str, **kwargs) -> bool:
+    r = pqq.do_query({":find": ["?a"], ":in": ["?ident"], ":where": [["?a", ":db/ident", "?ident"]]},
+                     [":measurement-set/includes-samples"], db=db, **kwargs)
+    return len(r) > 0
+
+
 def sample_assays(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
     """Which samples were measured in which measurement sets: subject_id,
     sample_id, timepoint_id, assay_name, assay_technology,
-    measurement_set_name."""
+    measurement_set_name. Reads :measurement-set/includes-samples; a database
+    from before that enrichment falls back to walking each set's
+    measurements, which can time out on large expression sets."""
     db = config.ensure_db(db)
+    if _has_includes_samples(db, **kwargs):
+        df = _run(sample_assays_query(), db, **kwargs)
+        if not len(df):
+            return pd.DataFrame(columns=["subject_id", "sample_id", "timepoint_id", "assay_name",
+                                         "assay_technology", "measurement_set_name"])
+        df["assay_technology"] = df["assay_technology"].map(pqres.ident_name)
+        smp = samples(db)
+        keep = [c for c in ("sample_id", "subject_id", "timepoint_id") if c in smp.columns]
+        out = smp[keep].merge(df, on="sample_id", how="right")
+        return pqres.keep_provenance(pqres.order_columns(out, ["subject_id", "sample_id", "timepoint_id"]), df)
     sets = dataset_summary(db)
     parts = []
     for _, row in sets.iterrows():
@@ -319,6 +481,11 @@ def variants_query(samples: Optional[Sequence[str]] = None,
     if measurement_set is not None:
         ins.append("?measurement-set")
         args.append(measurement_set)
+    if genes is not None:
+        where = _lead_with(where, [["?g", ":gene/hgnc-symbol", "?gene"], ["?v", ":variant/gene", "?g"],
+                                   ["?m", ":measurement/variant", "?v"]])
+    elif samples is not None:
+        where = _lead_with(where, _SAMPLE_LEAD)
     q = {":find": ["?sample-id", "?measurement-set", "?vaf",
                    ["pull", "?v", [":variant/id", ":variant/HGVSp", ":variant/HGVSc",
                                    {":variant/gene": [":gene/hgnc-symbol"]},
@@ -394,6 +561,8 @@ def gene_expression_query(genes: Optional[Sequence[str]] = None,
     if measurement_set is not None:
         ins.append("?measurement-set")
         args.append(measurement_set)
+    if genes is None and samples is not None:
+        where = _lead_with(where, _SAMPLE_LEAD)
     q = {":find": ["?sample-id", "?hgnc-symbol", "?measurement-set", "?value"],
          ":with": ["?m"],
          ":in": ins,
@@ -508,7 +677,9 @@ def cnv_segments(db: Optional[str] = None, genes: Optional[Sequence[str]] = None
     ins: List[Any] = []
     args: List[Any] = []
     if genes is not None:
-        where += [["?c", ":cnv/genes", "?g"], ["?g", ":gene/hgnc-symbol", "?hgnc-symbol"]]
+        # Datomic joins in clause order: start from the genes and the segments
+        # covering them, not from every CNV measurement in the database
+        where = [["?g", ":gene/hgnc-symbol", "?hgnc-symbol"], ["?c", ":cnv/genes", "?g"]] + where
         find.append("?hgnc-symbol")
         ins.append(["?hgnc-symbol", "..."])
         args.append(list(genes))
@@ -516,6 +687,8 @@ def cnv_segments(db: Optional[str] = None, genes: Optional[Sequence[str]] = None
         ins.append(["?sample-id", "..."])
         args.append(list(samples))
     _subject_filter(subjects, where, ins, args)
+    if genes is None and samples is not None:
+        where = _lead_with(where, _SAMPLE_LEAD)
     df = pqq.do_query({":find": find, ":in": ins, ":where": where}, args, db=db, **kwargs)
     df = pqres.keep_provenance(df.rename(columns=_strip_cnv_prefix), df)
     return pqres.order_columns(df, ["sample_id", "measurement_set", "cnv_id", "hgnc_symbol",
@@ -551,6 +724,9 @@ def cnv_gene_calls(db: Optional[str] = None, genes: Optional[Sequence[str]] = No
         ins.append(["?sample-id", "..."])
         args.append(list(samples))
     _subject_filter(subjects, where, ins, args)
+    if genes is None:
+        where = _lead_with(where, _SAMPLE_LEAD if samples is not None
+                           else [["?m", attr, "?value-ref" if enum else "?value"]])
     df = pqq.do_query({":find": ["?sample-id", "?measurement-set", "?hgnc-symbol", "?value"],
                        ":with": ["?m"], ":in": ins, ":where": where}, args, db=db, **kwargs)
     if len(df) and df["value"].dtype == object:
