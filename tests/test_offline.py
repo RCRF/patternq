@@ -71,3 +71,65 @@ def test_plots_offline():
     oc = pd.DataFrame({"os": [1, 2, 3, 4], "os_event": [True, False, True, True], "bor": ["PR", "PR", "PD", "PD"]})
     fig = pqp.plot_survival(oc, group="bor")
     assert [t.name for t in fig.data if t.mode == "lines"] == ["PD (n=2)", "PR (n=2)"]
+
+
+def _fake_set(monkeypatch, n, cursor, countable):
+    """A measurement set of n ids behind fake /datoms: with cursor paging and
+    in-place counts (the 2026-11 server) or offsets only (the one before)."""
+    from patternq import query as pqq
+    ids = list(range(1000, 1000 + n))
+    calls = []
+
+    def datoms(index, components, db=None, offset=0, limit=1000, after=None, **kw):
+        assert offset <= 100000, "offset past the server cap"
+        start = int(after) if after is not None else offset
+        page = ids[start:start + limit]
+        calls.append((start, limit))
+        df = pd.DataFrame({"e": 1, "a": ":measurement-set/measurements", "v": page, "tx": 0})
+        df.attrs["patternq_cursor"] = cursor
+        df.attrs["patternq_next"] = str(start + len(page)) if cursor and len(page) == limit else None
+        return df
+
+    def datoms_count(index, components, db=None, cap=1000000, **kw):
+        return (min(n, cap + 1), n <= cap) if countable else None
+
+    monkeypatch.setattr(pqq, "datoms", datoms)
+    monkeypatch.setattr(pqq, "datoms_count", datoms_count)
+    return ids, calls
+
+
+@pytest.mark.parametrize("cursor", [True, False])
+@pytest.mark.parametrize("n", [0, 7, 10000, 25001, 150000])
+def test_set_paging_with_and_without_cursor(monkeypatch, cursor, n):
+    ids, calls = _fake_set(monkeypatch, n, cursor, countable=False)
+    got, complete = pqd._set_measurement_ids(1, "db", 20000)
+    assert got == ids[:20000] and complete == (n <= 20000)
+    count = pqd._count_set_measurements(1, "db", 100000)
+    assert count == ((n, True) if n <= 100000 else (100000, False))
+    # without in-place counts, a bigger cap stops at the 100000 offset cap
+    assert pqd._count_set_measurements(1, "db", 1000000) == count
+
+
+@pytest.mark.parametrize("n", [7, 150000])
+def test_count_in_place_skips_paging(monkeypatch, n):
+    ids, calls = _fake_set(monkeypatch, n, cursor=True, countable=True)
+    assert pqd._count_set_measurements(1, "db", 100000) == ((n, True) if n <= 100000 else (100000, False))
+    assert calls == []
+
+
+def test_cursor_page_from_an_old_instance_is_reread_by_offset(monkeypatch):
+    from patternq import query as pqq
+    ids = list(range(1000, 1000 + 25001))
+
+    def datoms(index, components, db=None, offset=0, limit=1000, after=None, **kw):
+        new = after is None and offset == 0  # first page: a new instance; later cursor pages: an old one
+        start = offset if after is None else 0  # an old instance ignores `after`
+        page = ids[start:start + limit]
+        df = pd.DataFrame({"e": 1, "a": "x", "v": page, "tx": 0})
+        df.attrs["patternq_cursor"] = new
+        df.attrs["patternq_next"] = str(start + len(page)) if new else None
+        return df
+
+    monkeypatch.setattr(pqq, "datoms", datoms)
+    got, complete = pqd._set_measurement_ids(1, "db", 30000)
+    assert got == ids and complete

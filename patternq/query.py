@@ -23,7 +23,7 @@ import gzip
 import io
 import json
 import warnings
-from typing import Any, Dict, Iterable, List, Optional
+from typing import Any, Dict, Iterable, List, Optional, Tuple
 
 import pandas as pd
 import requests
@@ -226,12 +226,19 @@ def across_dbs(q: Query, dbs: Iterable[str], args: Optional[List[Any]] = None,
 
 def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str] = None,
            offset: int = 0, limit: int = 1000, timeout: int = 30,
-           session=None, db_name: Optional[str] = None) -> pd.DataFrame:
-    """Read raw datoms from an index ("eavt", "aevt", "avet", "vaet")."""
+           session=None, db_name: Optional[str] = None, after: Optional[str] = None) -> pd.DataFrame:
+    """Read raw datoms from an index ("eavt", "aevt", "avet", "vaet"), from
+    `offset`, or with `after` from the cursor a previous page returned. A
+    server with cursor paging sets df.attrs["patternq_next"] on every page
+    (None at the end of the range); df.attrs["patternq_cursor"] says whether
+    it did. Offsets past 100000 need the cursor."""
     db = config.ensure_db(db or db_name)
     http = session or requests
-    body = {"index": ":" + index.lstrip(":"), "components": components or [],
-            "offset": offset, "limit": limit}
+    body = {"index": ":" + index.lstrip(":"), "components": components or [], "limit": limit}
+    if after is not None:
+        body["after"] = after
+    else:
+        body["offset"] = offset
     resp = bp.send(lambda: http.post(f"{config.query_server()}/datoms/{db}", data=json.dumps(body),
                                      headers={**_headers("application/json"),
                                               "Content-Type": "application/json"},
@@ -241,7 +248,38 @@ def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str]
     res = resp.json()
     rows = [{k.lstrip(":"): v for k, v in d.items()} for d in res.get("datoms_chunk", [])]
     df = pd.DataFrame(rows, columns=["e", "a", "v", "tx"])
-    return pqres.add_provenance(df, {"db_name": db, "basis_t": res.get("basis_t")})
+    df = pqres.add_provenance(df, {"db_name": db, "basis_t": res.get("basis_t")})
+    df.attrs["patternq_cursor"] = "next" in res
+    df.attrs["patternq_next"] = res.get("next")
+    return df
+
+
+_count_unsupported: set = set()
+
+
+def datoms_count(index: str, components: List[Any], db: Optional[str] = None,
+                 cap: int = 1000000, timeout: int = 30) -> Optional[Tuple[int, bool]]:
+    """(count, exact) of the datoms in an index range, counted on the server
+    without transferring them; exact is False when the range holds more than
+    `cap` (server max 10000000). None when the server can't count in place
+    (before cursor paging), so callers fall back to paging."""
+    db = config.ensure_db(db)
+    if config.query_server() in _count_unsupported:
+        return None
+    # limit 1: a server without in-place counts answers with a one-datom page
+    body = {"index": ":" + index.lstrip(":"), "components": components, "count": True, "cap": cap,
+            "limit": 1}
+    resp = bp.send(lambda: requests.post(f"{config.query_server()}/datoms/{db}", data=json.dumps(body),
+                                         headers={**_headers("application/json"),
+                                                  "Content-Type": "application/json"},
+                                         timeout=timeout + 2),
+                   "Datoms count", limited=True)
+    _raise_for(resp, "Datoms count")
+    res = resp.json()
+    if "count" not in res:
+        _count_unsupported.add(config.query_server())
+        return None
+    return int(res["count"]), bool(res.get("exact", True))
 
 
 def list_datasets() -> pd.DataFrame:

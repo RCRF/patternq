@@ -139,27 +139,53 @@ def _measurement_set_eids(measurement_set: str, db: str, **kwargs) -> List[int]:
     return [int(e) for e in r["ms"]]
 
 
-def _set_measurement_ids(ms: int, db: str, limit: int, offset: int = 0) -> Tuple[List[int], bool]:
-    """Up to `limit` measurement ids of set `ms` in index order, starting at
-    `offset`, and whether they reach the end of the set."""
+def _set_page(ms: int, db: str, limit: int, pos) -> Tuple[List[int], Any]:
+    """Up to `limit` measurement ids of set `ms` from `pos`, and the position
+    after them, or None at the end of the set. A position is (offset, cursor):
+    the cursor when the server pages by cursor, else the offset. A cursor page
+    answered without one (an instance from before cursor paging, during a
+    deploy or a rollback) is read again by offset, never repeated."""
+    offset, after = pos if isinstance(pos, tuple) else (pos, None)
+    page = pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db,
+                      offset=0 if after else offset, limit=limit, after=after)
+    if after and not page.attrs.get("patternq_cursor"):
+        page = pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db, offset=offset, limit=limit)
+    ids = [int(v) for v in page["v"]]
+    end = offset + len(ids)
+    if page.attrs.get("patternq_cursor"):
+        nxt = page.attrs.get("patternq_next")
+        return ids, (end, nxt) if nxt is not None else None
+    return ids, (None if len(ids) < limit else (end, None))
+
+
+def _set_measurement_ids(ms: int, db: str, limit: int) -> Tuple[List[int], bool]:
+    """Up to `limit` measurement ids of set `ms` in index order, and whether
+    they reach the end of the set."""
     ids: List[int] = []
+    pos: Any = 0
     while len(ids) < limit:
-        want = min(_PAGE, limit - len(ids))
-        page = pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db,
-                          offset=offset + len(ids), limit=want)
-        ids += [int(v) for v in page["v"]]
-        if len(page) < want:
+        got, pos = _set_page(ms, db, min(_PAGE, limit - len(ids)), pos)
+        ids += got
+        if pos is None:
             return ids, True
-    return ids, not len(pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db,
-                                   offset=offset + len(ids), limit=1))
+    more, _ = _set_page(ms, db, 1, pos)
+    return ids, not more
 
 
 def _count_set_measurements(ms: int, db: str, cap: int) -> Tuple[int, bool]:
     """(count, exact): the set's measurement count when it is at most `cap`,
-    else (cap, False). One page for a small set. A set filling the first page
-    gets one probe past the cap, then one-datom probes binary-search the
-    10000-wide block it ends in, and one page of that block finishes the count:
-    about six round trips for any size, instead of a page per 10000."""
+    else (cap, False). Counted in place on the server when it can; otherwise
+    one page for a small set, and for a set filling the first page one probe
+    past the cap, then one-datom probes binary-search the 10000-wide block it
+    ends in and one page of that block finishes the count: about six round
+    trips for any size, instead of a page per 10000."""
+    counted = pqq.datoms_count("eavt", [ms, ":measurement-set/measurements"], db=db, cap=cap)
+    if counted is not None:
+        n, exact = counted
+        return (n, True) if exact and n <= cap else (cap, False)
+
+    cap = min(cap, 100000)  # the deepest offset paging goes
+
     def page(offset, limit):
         return len(pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db, offset=offset, limit=limit))
     step = 10000
@@ -178,11 +204,13 @@ def _count_set_measurements(ms: int, db: str, cap: int) -> Tuple[int, bool]:
     return lo * step + page(lo * step, step), True
 
 
-def measurement_sets(db: Optional[str] = None, count_cap: int = 100000, **kwargs) -> pd.DataFrame:
+def measurement_sets(db: Optional[str] = None, count_cap: int = 1000000, **kwargs) -> pd.DataFrame:
     """dataset_summary plus measurement_count per measurement set, and
     measurement_count_exact: False when the set has more than count_cap
     measurements, in which case measurement_count is count_cap (read it as
-    "at least"). Counting never binds a whole set in one query."""
+    "at least"). Counted in place by the server; a server without in-place
+    counts is paged instead, capped at 100000 (the deepest it pages by
+    offset). Counting never binds a whole set in one query."""
     db = config.ensure_db(db)
     df = dataset_summary(db, **kwargs)
     sets = pqq.do_query({":find": ["?ms", "?measurement-set-name"],
@@ -252,10 +280,10 @@ def measurement_set_attributes(measurement_set: str, db: Optional[str] = None,
     attr = _mattr(measurement) if measurement else None
     found: List[int] = []
     for ms in _measurement_set_eids(measurement_set, db):
-        offset = 0
-        for _ in range(10):  # the server caps datoms offsets at 100000
-            ids, complete = _set_measurement_ids(ms, db, _PAGE if attr else n, offset)
-            offset += len(ids)
+        pos: Any = 0
+        for _ in range(10):  # 100000 measurements at most, the server's offset cap
+            ids, pos = _set_page(ms, db, _PAGE if attr else n, pos)
+            complete = pos is None
             if attr and ids:
                 r = pqq.do_query({":find": ["?m"], ":in": [["?m", "..."]], ":where": [["?m", attr]]},
                                  [ids], db=db)
