@@ -10,6 +10,7 @@ Mirrors the R library (R/patternq/R/queries_*.R); see PARITY.md.
 from typing import Any, Dict, List, Literal, Optional, Sequence, Tuple
 
 from concurrent.futures import ThreadPoolExecutor
+from functools import lru_cache
 
 import pandas as pd
 
@@ -34,11 +35,84 @@ def _run(q: QueryAndArgs, db, **kwargs) -> pd.DataFrame:
     return pqq.do_query(q[0], q[1], db=db, **kwargs)
 
 
-# Starting from a few samples walks only their measurements. A subject can
-# own most of a dataset (a single-participant deep dive has one subject and
-# every sample), so subject-only queries start from the measurement attribute
-# instead.
+# Subset calls start from the samples (subject subsets are resolved to their
+# samples first): that walks only the subset's own measurements.
 _SAMPLE_LEAD = [["?s", ":sample/id", "?sample-id"], ["?m", ":measurement/sample", "?s"]]
+_SET_WALK_CAP = 2000000  # walking more set measurements than this is never the cheaper start
+# Without genes, a sample-subset call returns whole samples' worth of rows
+# (every gene's expression or CNV call): one /query per this many samples, so
+# no single query holds more on the server.
+_SAMPLES_PER_QUERY = 2
+
+
+def _by_sample_chunks(f, samples: Sequence[str]) -> pd.DataFrame:
+    """f(chunk) for each _SAMPLES_PER_QUERY samples, concatenated."""
+    samples = list(samples)
+    parts = [f(samples[i:i + _SAMPLES_PER_QUERY]) for i in range(0, len(samples), _SAMPLES_PER_QUERY)]
+    rows = [p for p in parts if len(p)] or parts[:1]
+    return pqres.keep_provenance(pd.concat(rows, ignore_index=True), parts[0])
+
+
+def _subject_samples(subjects: Sequence[str], db, **kwargs) -> List[str]:
+    """The subjects' sample ids, which subject-subset calls run by."""
+    r = pqq.do_query({":find": ["?sample-id"], ":in": [["?subject-id", "..."]],
+                      ":where": [["?p", ":subject/id", "?subject-id"], ["?s", ":sample/subject", "?p"],
+                                 ["?s", ":sample/id", "?sample-id"]]},
+                     [list(subjects)], db=db, **kwargs)
+    return sorted(r["sample_id"]) if len(r) else []
+
+
+@lru_cache(maxsize=65536)
+def _first_measurement(db: str, ms: int) -> Optional[int]:
+    """A set's first measurement id (a database name pins an immutable
+    database, so this never changes)."""
+    first = pqq.datoms("eavt", [ms, ":measurement-set/measurements"], db=db, limit=1)
+    return int(first["v"].iloc[0]) if len(first) else None
+
+
+def _sets_carrying(attr: str, sets: Sequence[int], db: str) -> List[int]:
+    """The sets in `sets` holding `attr` measurements, judged by each set's
+    first measurement (a set holds one kind of measurement): one datoms page
+    per set (cached, 4 at a time), then one query over those measurements."""
+    with ThreadPoolExecutor(bp.retry_policy()["max_concurrency"]) as pool:
+        firsts = list(pool.map(lambda ms: _first_measurement(db, ms), sets))
+    ids = [f for f in firsts if f is not None]
+    if not ids:
+        return []
+    r = pqq.do_query({":find": ["?m"], ":in": [["?m", "..."]], ":where": [["?m", attr]]}, [ids], db=db)
+    carrying = {int(m) for m in r["m"]} if len(r) else set()
+    return [ms for ms, f in zip(sets, firsts) if f in carrying]
+
+
+def _plan(attr: str, sample_ids: Sequence[str], db: str, **kwargs) -> Tuple[str, List[int]]:
+    """How a CNV subset query should run: ("empty", []) when no `attr` set
+    includes the samples; ("sets", sets) to walk just those sets' measurements;
+    ("samples", sets) to walk the samples' measurements, restricted to those
+    sets. :measurement-set/includes-samples (schema 0.3.18) names the sets
+    holding each sample; the server counts both walks in place, and the
+    smaller one wins. A database without the enrichment walks the samples."""
+    if not _has_includes_samples(db, **kwargs):
+        return "samples", []
+    r = pqq.do_query({":find": ["?s", "?ms"], ":in": [["?sample-id", "..."]],
+                      ":where": [["?s", ":sample/id", "?sample-id"],
+                                 ["?ms", ":measurement-set/includes-samples", "?s"]]},
+                     [list(sample_ids)], db=db, **kwargs)
+    sets = _sets_carrying(attr, sorted({int(x) for x in r["ms"]}), db) if len(r) else []
+    if not sets:
+        return "empty", []
+    in_sets = 0
+    for ms in sets:
+        n = pqq.datoms_count("eavt", [ms, ":measurement-set/measurements"], db=db, cap=_SET_WALK_CAP)
+        if n is None or not n[1]:
+            return "samples", sets
+        in_sets += n[0]
+    walked = 0
+    for e in sorted({int(x) for x in r["s"]}):
+        n = pqq.datoms_count("vaet", [e, ":measurement/sample"], db=db, cap=in_sets + 1)
+        walked += n[0] if n else in_sets + 1
+        if walked > in_sets:
+            return "sets", sets
+    return "samples", sets
 
 
 def _lead_with(where: List[Any], lead: List[Any]) -> List[Any]:
@@ -410,9 +484,10 @@ def _has_includes_samples(db: str, **kwargs) -> bool:
 def sample_assays(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
     """Which samples were measured in which measurement sets: subject_id,
     sample_id, timepoint_id, assay_name, assay_technology,
-    measurement_set_name. Reads :measurement-set/includes-samples; a database
-    from before that enrichment falls back to walking each set's
-    measurements, which can time out on large expression sets."""
+    measurement_set_name. Reads :measurement-set/includes-samples. A database
+    without that enrichment uses unify-central's stored sample index when the
+    service has a current copy, else datoms seeks (see _sample_assays_by_seek):
+    slow on a large cohort, but no query walks the measurements."""
     db = config.ensure_db(db)
     if _has_includes_samples(db, **kwargs):
         df = _run(sample_assays_query(), db, **kwargs)
@@ -424,28 +499,155 @@ def sample_assays(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
         keep = [c for c in ("sample_id", "subject_id", "timepoint_id") if c in smp.columns]
         out = smp[keep].merge(df, on="sample_id", how="right")
         return pqres.keep_provenance(pqres.order_columns(out, ["subject_id", "sample_id", "timepoint_id"]), df)
-    sets = dataset_summary(db)
-    parts = []
-    for _, row in sets.iterrows():
-        r = pqq.do_query({":find": ["?sample-id"], ":in": ["?ms-name"],
-                          ":where": [["?ms", ":measurement-set/name", "?ms-name"],
-                                     ["?ms", ":measurement-set/measurements", "?m"],
-                                     ["?m", ":measurement/sample", "?s"],
-                                     ["?s", ":sample/id", "?sample-id"]]},
-                         [row["measurement_set_name"]], db=db, **kwargs)
-        if len(r):
-            r["assay_name"] = row["assay_name"]
-            r["assay_technology"] = row["assay_technology"]
-            r["measurement_set_name"] = row["measurement_set_name"]
-            parts.append(r)
-    if not parts:
+    found = _sample_assays_from_index(db)
+    if found is None:
+        found = _sample_assays_by_seek(db, **kwargs)
+    if not len(found):
         return pd.DataFrame(columns=["subject_id", "sample_id", "timepoint_id", "assay_name",
                                      "assay_technology", "measurement_set_name"])
-    df = pd.concat(parts, ignore_index=True)
     smp = samples(db)
     keep = [c for c in ("sample_id", "subject_id", "timepoint_id") if c in smp.columns]
-    df = smp[keep].merge(df, on="sample_id", how="right")
-    return pqres.keep_provenance(pqres.order_columns(df, ["subject_id", "sample_id", "timepoint_id"]), sets)
+    out = smp[keep].merge(found, on="sample_id", how="right")
+    return pqres.keep_provenance(pqres.order_columns(out, ["subject_id", "sample_id", "timepoint_id"]), smp)
+
+
+_SAMPLE_ASSAY_COLUMNS = ["sample_id", "assay_name", "assay_technology", "measurement_set_name"]
+
+
+def _sample_assays_from_index(db: str) -> Optional[pd.DataFrame]:
+    """sample_assays rows from unify-central's stored sample index, or None
+    when the service has no current copy."""
+    index = pqq.sample_index(db)
+    if index is None:
+        return None
+    sets, smp = index.get("measurement_sets", {}), index.get("samples", {})
+    rows = [(smp[k]["id"], sets[ms].get("assay"), sets[ms].get("assay_type"), sets[ms].get("name"))
+            for ms, keys in index.get("set_samples", {}).items() for k in keys if k in smp and ms in sets]
+    return pd.DataFrame(rows, columns=_SAMPLE_ASSAY_COLUMNS)
+
+
+# The links from a measurement set to its samples: the set's ref to its
+# members, and each member's ref to its sample. Matrices list their samples
+# directly.
+_SET_LINKS = [(":measurement-set/measurements", ":measurement/sample"),
+              (":measurement-set/single-cells", ":single-cell/sample")]
+_SEEK_STEPS = 8
+
+
+def _seek1(index: str, components: List[Any], db: str):
+    d = pqq.datoms(index, components, db=db, limit=1, seek=True)
+    return d.iloc[0] if len(d) else None
+
+
+def _last_member(ms: int, link: str, lo: int, db: str) -> int:
+    """The highest member id of set `ms` through `link`: one offset read for a
+    set within the server's offset cap, else seeks, doubling then halving the
+    distance from `lo` (each seek lands on the first member at or past an id)."""
+    n = pqq.datoms_count("eavt", [ms, link], db=db, cap=100001)
+    if n is not None and n[1]:
+        return int(pqq.datoms("eavt", [ms, link], db=db, offset=n[0] - 1, limit=1)["v"].iloc[0])
+
+    def at(x):
+        d = _seek1("eavt", [ms, link, x], db)
+        return int(d["v"]) if d is not None and d["a"] == link and int(d["e"]) == ms else None
+    low, step = lo, 1
+    while True:
+        v = at(lo + step)
+        if v is None:
+            high = lo + step
+            break
+        low, step = v, step * 2
+    while high - low > 1:
+        mid = (low + high) // 2
+        v = at(mid)
+        if v is None:
+            high = mid
+        else:
+            low = v
+    return low
+
+
+def _sample_assays_by_seek(db: str, **kwargs) -> pd.DataFrame:
+    """sample_assays rows for a database without :measurement-set/includes-samples
+    or a stored sample index, from datoms seeks only: no query binds a set's or
+    a sample's measurements. For each set its first and last member ids; then
+    for each sample and set, a seek into the sample's members (VAET) at the
+    set's first id, and one lookup of the hit's sets. Sets' ids interleave, so
+    a hit in another set (which it also records) moves the seek past it, up to
+    _SEEK_STEPS times; past that, one query settles that sample alone. About
+    two requests per sample and set, each also an audit write on the service:
+    slow on a large cohort, but it never walks the data."""
+    meta = pqq.do_query({":find": ["?ms", "?assay-name", "?assay-technology", "?measurement-set-name"],
+                         ":where": [["?a", ":assay/name", "?assay-name"], ["?a", ":assay/technology", "?t"],
+                                    ["?t", ":db/ident", "?assay-technology"], ["?a", ":assay/measurement-sets", "?ms"],
+                                    ["?ms", ":measurement-set/name", "?measurement-set-name"]]}, db=db, **kwargs)
+    ids = pqq.do_query({":find": ["?s", "?sample-id"], ":where": [["?s", ":sample/id", "?sample-id"]]},
+                       db=db, **kwargs)
+    sample_id = dict(zip((int(e) for e in ids["s"]), ids["sample_id"])) if len(ids) else {}
+    members: Dict[int, set] = {}  # set -> sample eids
+    ranges = []  # (set, set link, sample link, first, last)
+    for ms in (int(e) for e in meta["ms"]):
+        members[ms] = set()
+        for set_link, sample_link in _SET_LINKS:
+            first = pqq.datoms("eavt", [ms, set_link], db=db, limit=1)
+            if len(first):
+                lo = int(first["v"].iloc[0])
+                ranges.append((ms, set_link, sample_link, lo, _last_member(ms, set_link, lo, db)))
+        for mm in pqq.datoms("eavt", [ms, ":measurement-set/measurement-matrices"], db=db, limit=10000)["v"]:
+            pos: Any = 0
+            while pos is not None:
+                got, pos = _member_page(int(mm), ":measurement-matrix/samples", db, pos)
+                members[ms].update(got)
+
+    def owners(member: int, set_link: str) -> List[int]:
+        return [int(e) for e in pqq.datoms("vaet", [member, set_link], db=db, limit=100)["e"]]
+
+    def check(s: int):
+        hits = set()
+        for ms, set_link, sample_link, lo, hi in ranges:
+            if ms in hits:
+                continue
+            pos, settled = lo, False
+            for _ in range(_SEEK_STEPS):
+                d = _seek1("vaet", [s, sample_link, pos], db)
+                if d is None or d["a"] != sample_link or int(d["v"]) != s or int(d["e"]) > hi:
+                    settled = True
+                    break
+                sets_of = owners(int(d["e"]), set_link)
+                hits.update(sets_of)
+                if ms in sets_of:
+                    settled = True
+                    break
+                pos = int(d["e"]) + 1
+            if not settled:
+                r = pqq.do_query({":find": ["?m"], ":in": ["?s", "?ms"],
+                                  ":where": [["?m", sample_link, "?s"], ["?ms", set_link, "?m"]]},
+                                 [s, ms], db=db, **kwargs)
+                if len(r):
+                    hits.add(ms)
+        return s, hits
+
+    with ThreadPoolExecutor(bp.retry_policy()["max_concurrency"]) as pool:
+        for s, hits in pool.map(check, sample_id):
+            for ms in hits:
+                if ms in members:
+                    members[ms].add(s)
+    by_set = {int(r["ms"]): r for _, r in meta.iterrows()}
+    rows = [(sample_id[s], by_set[ms]["assay_name"], pqres.ident_name(by_set[ms]["assay_technology"]),
+             by_set[ms]["measurement_set_name"])
+            for ms, ss in members.items() for s in ss if s in sample_id]
+    return pd.DataFrame(rows, columns=_SAMPLE_ASSAY_COLUMNS)
+
+
+def _member_page(e: int, link: str, db: str, pos) -> Tuple[List[int], Any]:
+    """One page of `e`'s `link` values from `pos` (an offset or a cursor), and
+    the next position, or None at the end."""
+    after = pos if isinstance(pos, str) else None
+    page = pqq.datoms("eavt", [e, link], db=db, offset=0 if after else pos, limit=_PAGE, after=after)
+    vals = [int(v) for v in page["v"]]
+    if page.attrs.get("patternq_cursor"):
+        return vals, page.attrs.get("patternq_next")
+    return vals, (None if len(vals) < _PAGE else pos + len(vals))
 
 
 def measurement_matrices_query() -> QueryAndArgs:
@@ -530,6 +732,9 @@ def variants(db: Optional[str] = None, samples: Optional[Sequence[str]] = None,
     """Somatic variant measurements: one row per measurement with sample_id,
     measurement_set, variant_id, hgnc_symbol, HGVSp, HGVSc, impact, vaf, t_depth
     (where present). HGVSp/HGVSc (cardinality many) are joined with "; "."""
+    if genes is None and samples is not None and len(samples) > _SAMPLES_PER_QUERY:
+        return _by_sample_chunks(lambda c: variants(db, samples=c, measurement_set=measurement_set, **kwargs),
+                                 samples)
     q, args = variants_query(samples=samples, genes=genes, measurement_set=measurement_set)
     df = pqq.do_query(q, args, db=db, **kwargs)
     df = pqres.keep_provenance(
@@ -607,6 +812,10 @@ def gene_expression(db: Optional[str] = None, genes: Optional[Sequence[str]] = N
     measurement: attribute without namespace ("tpm", "rsem-normalized-count", ...).
     measurement_set: datasets may have several sets carrying the attribute (bulk,
     pseudobulk, ...); without it all are returned, told apart by measurement_set."""
+    if genes is None and samples is not None and len(samples) > _SAMPLES_PER_QUERY:
+        return _by_sample_chunks(lambda c: gene_expression(db, samples=c, measurement=measurement,
+                                                           measurement_set=measurement_set, **kwargs),
+                                 samples)
     q, args = gene_expression_query(genes=genes, samples=samples, measurement=measurement,
                                     measurement_set=measurement_set)
     return pqq.do_query(q, args, db=db, **kwargs)
@@ -689,6 +898,19 @@ def cnv_segments(db: Optional[str] = None, genes: Optional[Sequence[str]] = None
     segment_mean_lrr, absolute_cn, ... At least one of genes, samples, subjects
     is required."""
     _require_cnv_subset(genes, samples, subjects)
+    start = kwargs.pop("_start", None)
+    sets = kwargs.pop("_sets", [])
+    if genes is None and start is None:
+        ids = list(samples) if samples is not None else _subject_samples(subjects, db, **kwargs)
+        if not ids:
+            return pd.DataFrame()
+        start, sets = _plan(":measurement/cnv", ids, db, **kwargs)
+        if start == "empty":
+            return pd.DataFrame()
+        if start == "samples" and len(ids) > _SAMPLES_PER_QUERY:
+            return _by_sample_chunks(lambda c: cnv_segments(db, samples=c, subjects=subjects, _start=start,
+                                                            _sets=sets, **kwargs), ids)
+        return cnv_segments(db, samples=ids, subjects=subjects, _start=start, _sets=sets, **kwargs)
     where = [["?m", ":measurement/cnv", "?c"],
              ["?c", ":cnv/id", "?cnv-id"],
              ["?m", ":measurement/sample", "?s"],
@@ -715,8 +937,13 @@ def cnv_segments(db: Optional[str] = None, genes: Optional[Sequence[str]] = None
         ins.append(["?sample-id", "..."])
         args.append(list(samples))
     _subject_filter(subjects, where, ins, args)
-    if genes is None and samples is not None:
+    if sets:
+        ins.append(["?ms", "..."])
+        args.append(sets)
+    if start == "samples":
         where = _lead_with(where, _SAMPLE_LEAD)
+    elif start == "sets":
+        where = _lead_with(where, [["?ms", ":measurement-set/measurements", "?m"]])
     df = pqq.do_query({":find": find, ":in": ins, ":where": where}, args, db=db, **kwargs)
     df = pqres.keep_provenance(df.rename(columns=_strip_cnv_prefix), df)
     return pqres.order_columns(df, ["sample_id", "measurement_set", "cnv_id", "hgnc_symbol",
@@ -731,6 +958,21 @@ def cnv_gene_calls(db: Optional[str] = None, genes: Optional[Sequence[str]] = No
     of genes, samples, subjects is required."""
     _require_cnv_subset(genes, samples, subjects)
     attr = _mattr(measurement)
+    start = kwargs.pop("_start", None)
+    sets = kwargs.pop("_sets", [])
+    if genes is None and start is None:
+        ids = list(samples) if samples is not None else _subject_samples(subjects, db, **kwargs)
+        if not ids:
+            return pd.DataFrame()
+        start, sets = _plan(attr, ids, db, **kwargs)
+        if start == "empty":
+            return pd.DataFrame()
+        if start == "samples" and len(ids) > _SAMPLES_PER_QUERY:
+            return _by_sample_chunks(lambda c: cnv_gene_calls(db, samples=c, subjects=subjects,
+                                                              measurement=measurement, _start=start, _sets=sets,
+                                                              **kwargs), ids)
+        return cnv_gene_calls(db, samples=ids, subjects=subjects, measurement=measurement, _start=start,
+                              _sets=sets, **kwargs)
     enum = attr in ENUM_MEASUREMENT_ATTRS
     # gene-first clause order: gene-level CNV sets are large (genes x samples)
     where = [["?g", ":gene/hgnc-symbol", "?hgnc-symbol"],
@@ -752,9 +994,13 @@ def cnv_gene_calls(db: Optional[str] = None, genes: Optional[Sequence[str]] = No
         ins.append(["?sample-id", "..."])
         args.append(list(samples))
     _subject_filter(subjects, where, ins, args)
-    if genes is None:
-        where = _lead_with(where, _SAMPLE_LEAD if samples is not None
-                           else [["?m", attr, "?value-ref" if enum else "?value"]])
+    if sets:
+        ins.append(["?ms", "..."])
+        args.append(sets)
+    if start == "samples":
+        where = _lead_with(where, _SAMPLE_LEAD)
+    elif start == "sets":
+        where = _lead_with(where, [["?ms", ":measurement-set/measurements", "?m"]])
     df = pqq.do_query({":find": ["?sample-id", "?measurement-set", "?hgnc-symbol", "?value"],
                        ":with": ["?m"], ":in": ins, ":where": where}, args, db=db, **kwargs)
     if len(df) and df["value"].dtype == object:

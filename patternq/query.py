@@ -226,12 +226,15 @@ def across_dbs(q: Query, dbs: Iterable[str], args: Optional[List[Any]] = None,
 
 def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str] = None,
            offset: int = 0, limit: int = 1000, timeout: int = 30,
-           session=None, db_name: Optional[str] = None, after: Optional[str] = None) -> pd.DataFrame:
+           session=None, db_name: Optional[str] = None, after: Optional[str] = None,
+           seek: bool = False) -> pd.DataFrame:
     """Read raw datoms from an index ("eavt", "aevt", "avet", "vaet"), from
     `offset`, or with `after` from the cursor a previous page returned. A
     server with cursor paging sets df.attrs["patternq_next"] on every page
     (None at the end of the range); df.attrs["patternq_cursor"] says whether
-    it did. Offsets past 100000 need the cursor."""
+    it did. Offsets past 100000 need the cursor. seek=True starts at the first
+    datom at or after `components` (which may then run past them into the
+    next attribute or entity); seek pages have no cursor."""
     db = config.ensure_db(db or db_name)
     http = session or requests
     body = {"index": ":" + index.lstrip(":"), "components": components or [], "limit": limit}
@@ -239,6 +242,8 @@ def datoms(index: str, components: Optional[List[Any]] = None, db: Optional[str]
         body["after"] = after
     else:
         body["offset"] = offset
+    if seek:
+        body["seek"] = True
     resp = bp.send(lambda: http.post(f"{config.query_server()}/datoms/{db}", data=json.dumps(body),
                                      headers={**_headers("application/json"),
                                               "Content-Type": "application/json"},
@@ -280,6 +285,24 @@ def datoms_count(index: str, components: List[Any], db: Optional[str] = None,
         _count_unsupported.add(config.query_server())
         return None
     return int(res["count"]), bool(res.get("exact", True))
+
+
+def sample_index(db: Optional[str] = None) -> Optional[Dict[str, Any]]:
+    """unify-central's stored sample index for `db` (which samples have data in
+    which measurement sets), or None when the service doesn't answer with a
+    current copy (no copy, a stale one, or no such route). The service serves
+    only a copy built at the database's current basis t; it never builds one
+    on request."""
+    db = config.ensure_db(db)
+    resp = bp.send(lambda: requests.get(f"{config.query_server()}/sample-index/{db}",
+                                        headers=_headers("application/json"), timeout=60),
+                   "Sample index", limited=True)
+    if resp.status_code != 200:  # 404 no copy, 409 stale, or a service without the route
+        return None
+    try:
+        return resp.json()
+    except ValueError:
+        return None
 
 
 def list_datasets() -> pd.DataFrame:

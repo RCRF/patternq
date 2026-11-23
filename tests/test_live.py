@@ -31,3 +31,16 @@ def test_tcga_uvm():
     assert n["count_s"][0] == 80
     d = pq.datoms("aevt", [":subject/id"], db=db, limit=3)
     assert len(d) == 3 and d["a"][0] == ":subject/id"
+
+
+def test_sample_assays_fallbacks_match_includes_samples(monkeypatch):
+    # a database without :measurement-set/includes-samples: the stored sample
+    # index when the service has a current copy, else datoms seeks; either way
+    # the same rows as the enrichment
+    db = tdb("tcga-uvm")
+    cached = pqd.sample_assays(db)
+    monkeypatch.setattr(pqd, "_has_includes_samples", lambda db, **kw: False)
+    key = lambda df: set(map(tuple, df[["sample_id", "measurement_set_name"]].values))
+    assert key(pqd.sample_assays(db)) == key(cached)
+    monkeypatch.setattr(pq.query, "sample_index", lambda db=None: None)
+    assert key(pqd.sample_assays(db)) == key(cached)
