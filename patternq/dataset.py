@@ -475,10 +475,17 @@ def sample_assays_query() -> QueryAndArgs:
     return q, []
 
 
+def _installed(db: str, *idents: str, **kwargs) -> bool:
+    """Whether every attribute in `idents` is installed in db. A clause on an
+    attribute a database lacks fails the whole query (HTTP 400, not-an-entity);
+    callers check first and return no rows."""
+    r = pqq.do_query({":find": ["?ident"], ":in": [["?ident", "..."]], ":where": [["?a", ":db/ident", "?ident"]]},
+                     [list(idents)], db=db, **kwargs)
+    return len(r) == len(set(idents))
+
+
 def _has_includes_samples(db: str, **kwargs) -> bool:
-    r = pqq.do_query({":find": ["?a"], ":in": ["?ident"], ":where": [["?a", ":db/ident", "?ident"]]},
-                     [":measurement-set/includes-samples"], db=db, **kwargs)
-    return len(r) > 0
+    return _installed(db, ":measurement-set/includes-samples", **kwargs)
 
 
 def sample_assays(db: Optional[str] = None, **kwargs) -> pd.DataFrame:
@@ -795,7 +802,10 @@ def gene_expression_query(genes: Optional[Sequence[str]] = None,
         ins.append("?measurement-set")
         args.append(measurement_set)
     if genes is None and samples is not None:
-        where = _lead_with(where, _SAMPLE_LEAD)
+        # the value clause right after the sample: a sample's measurements are
+        # every assay's (expression, CNV, variants, ...), so drop the others
+        # before the per-row gene joins (aml: 62k measurements, 24k TPM; 32 s -> 1 s)
+        where = _lead_with(where, _SAMPLE_LEAD + [["?m", _mattr(measurement), "?value"]])
     q = {":find": ["?sample-id", "?hgnc-symbol", "?measurement-set", "?value"],
          ":with": ["?m"],
          ":in": ins,
@@ -900,6 +910,10 @@ def cnv_segments(db: Optional[str] = None, genes: Optional[Sequence[str]] = None
     _require_cnv_subset(genes, samples, subjects)
     start = kwargs.pop("_start", None)
     sets = kwargs.pop("_sets", [])
+    if start is None:
+        db = config.ensure_db(db)
+        if not _installed(db, ":measurement/cnv", **kwargs):
+            return pd.DataFrame()
     if genes is None and start is None:
         ids = list(samples) if samples is not None else _subject_samples(subjects, db, **kwargs)
         if not ids:
@@ -960,6 +974,10 @@ def cnv_gene_calls(db: Optional[str] = None, genes: Optional[Sequence[str]] = No
     attr = _mattr(measurement)
     start = kwargs.pop("_start", None)
     sets = kwargs.pop("_sets", [])
+    if start is None:
+        db = config.ensure_db(db)
+        if not _installed(db, attr, **kwargs):
+            return pd.DataFrame()
     if genes is None and start is None:
         ids = list(samples) if samples is not None else _subject_samples(subjects, db, **kwargs)
         if not ids:
@@ -998,7 +1016,8 @@ def cnv_gene_calls(db: Optional[str] = None, genes: Optional[Sequence[str]] = No
         ins.append(["?ms", "..."])
         args.append(sets)
     if start == "samples":
-        where = _lead_with(where, _SAMPLE_LEAD)
+        # the CNV attribute right after the sample, before the per-row gene joins
+        where = _lead_with(where, _SAMPLE_LEAD + [["?m", attr, "?value-ref" if enum else "?value"]])
     elif start == "sets":
         where = _lead_with(where, [["?ms", ":measurement-set/measurements", "?m"]])
     df = pqq.do_query({":find": ["?sample-id", "?measurement-set", "?hgnc-symbol", "?value"],
@@ -1145,6 +1164,9 @@ def clinical_interventions(db: Optional[str] = None, subjects: Optional[Sequence
                            **kwargs) -> pd.DataFrame:
     """Clinical interventions (treatments, surgeries, biopsies, ...), one row per
     intervention with treatment regimen and drug names where present."""
+    db = config.ensure_db(db)
+    if not _installed(db, ":clinical-intervention/subject", **kwargs):
+        return pd.DataFrame()
     ins: List[Any] = []
     args: List[Any] = []
     if subjects is not None:
